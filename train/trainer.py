@@ -3,11 +3,9 @@ High-level trainer coordinating corruption, retrieval, and reconstruction.
 """
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Dict, Iterable
+from typing import Dict
 
 import torch
-from torch.utils.data import DataLoader
 
 from data_pipeline.dataloaders.pmc_datamodule import PMCDatamodule
 from model.losses.consistency_regularizer import ConsistencyRegularizer
@@ -38,6 +36,10 @@ class Trainer:
         for key, value in batch.items():
             if isinstance(value, torch.Tensor):
                 tensor_batch[key] = value.to(self.device)
+            elif isinstance(value, dict):
+                tensor_batch[key] = self._move_to_device(value)
+            else:
+                tensor_batch[key] = value
         return tensor_batch
 
     def fit(
@@ -58,8 +60,8 @@ class Trainer:
         for epoch in range(epochs):
             self.model.train()
             for step, batch in enumerate(train_loader):
-                corrupted = batch["corrupted_sample"]
-                full = batch["full_sample"]
+                corrupted = self._move_to_device(batch["corrupted_sample"])
+                full = self._move_to_device(batch["full_sample"])
                 retrieval = self._retrieve(batch)
 
                 outputs_corrupted = self.model(**corrupted, retrieval=retrieval)
