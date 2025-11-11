@@ -1,6 +1,6 @@
 dataset:
   name: textvqa
-  root: /path/to/textvqa
+  root: ./data_pipeline/data/textvqa
   batch_size: 4
   num_workers: 2
 corruption:

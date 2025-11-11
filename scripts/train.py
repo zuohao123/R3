@@ -86,12 +86,14 @@ def main() -> None:
 
     corruption_cfg = CorruptionConfig(**cfg.get("corruption", {}))
     model_cfg = cfg.get("model", {})
+    print("SimpleFeatureBuilder 开始")
     feature_builder = SimpleFeatureBuilder(
         hidden_size=model_cfg.get("hidden_size", 256),
         question_length=model_cfg.get("question_length", 32),
         vision_tokens=model_cfg.get("vision_tokens", 16),
     )
-
+    print("SimpleFeatureBuilder 结束")
+    print("PMCDatamodule 开始")
     datamodule = PMCDatamodule(
         dataset_factory=dataset_factory,
         batch_size=args.batch_size or dataset_cfg.get("batch_size", 4),
@@ -99,7 +101,7 @@ def main() -> None:
         corruption_config=corruption_cfg,
         feature_builder=feature_builder,
     )
-
+    print("PMCDatamodule 结束")
     retriever_cfg = RetrievalConfig(**cfg.get("retrieval", {}))
     retriever = PseudoTextRetriever(retriever_cfg)
     corpus = load_retrieval_index(args.index)
@@ -109,7 +111,9 @@ def main() -> None:
     else:
         print("[Retrieval] No index provided, proceeding with empty corpus.")
 
+    print("build_r3_model构建模型 开始")
     model = build_r3_model(model_cfg)
+    print("build_r3_model构建模型 结束")
     trainer = Trainer(
         model=model,
         datamodule=datamodule,
