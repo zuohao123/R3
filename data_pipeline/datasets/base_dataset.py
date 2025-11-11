@@ -29,7 +29,6 @@ class BasePMCDataset:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict:
-        print(f'self.samples = {self.samples}')
         sample_meta = self.samples[idx]
         raw_item = self._load_raw_item(sample_meta)
         return {
