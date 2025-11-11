@@ -1,0 +1,21 @@
+dataset:
+  name: textvqa
+  root: /path/to/textvqa
+  batch_size: 4
+corruption:
+  blur_prob: 0.3
+  occlusion_prob: 0.3
+  crop_prob: 0.2
+  ocr_noise_prob: 0.4
+retrieval:
+  top_k: 5
+  noise_threshold: 0.6
+training:
+  epochs: 3
+  lr_backbone: 1.0e-5
+  lr_adapter: 5.0e-5
+evaluation:
+  benchmarks:
+    - textvqa
+    - chartqa
+    - docvqa
