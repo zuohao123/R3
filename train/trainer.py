@@ -3,6 +3,7 @@ High-level trainer coordinating corruption, retrieval, and reconstruction.
 """
 from __future__ import annotations
 
+from time import process_time_ns
 from typing import Dict
 
 import torch
@@ -30,6 +31,10 @@ class Trainer:
         self.log_interval = log_interval
         self.filter = ConsistencyFilter()
         self.consistency_loss = ConsistencyRegularizer()
+
+    def _prepare_model_inputs(self, sample: Dict) -> Dict:
+        allowed_keys = {"question_tokens", "vision_tokens", "pseudo_text", "corruption_report", "answer"}
+        return {key: sample[key] for key in allowed_keys if key in sample}
 
     def _move_to_device(self, batch: Dict) -> Dict:
         tensor_batch = {}
@@ -60,10 +65,11 @@ class Trainer:
         for epoch in range(epochs):
             self.model.train()
             for step, batch in enumerate(train_loader):
-                corrupted = self._move_to_device(batch["corrupted_sample"])
-                full = self._move_to_device(batch["full_sample"])
+                corrupted_raw = self._move_to_device(batch["corrupted_sample"])
+                full_raw = self._move_to_device(batch["full_sample"])
+                corrupted = self._prepare_model_inputs(corrupted_raw)
+                full = self._prepare_model_inputs(full_raw)
                 retrieval = self._retrieve(batch)
-
                 outputs_corrupted = self.model(**corrupted, retrieval=retrieval)
                 outputs_full = self.model(**full, retrieval=retrieval)
 

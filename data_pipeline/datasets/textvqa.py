@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .base_dataset import BasePMCDataset
 
 
 class TextVQADataset(BasePMCDataset):
+    def __init__(self, root: Path, split: str = "train") -> None:
+        super().__init__(root, split)
+        self.image_root = self._discover_image_root()
+
     def _build_index(self) -> List[Dict]:
         annot_path = self.root / f"textvqa_{self.split}.json"
         if not annot_path.exists():
@@ -51,7 +55,45 @@ class TextVQADataset(BasePMCDataset):
                 elif isinstance(answers, dict) and "answer" in answers:
                     sample["answer"] = answers["answer"]
             normalized.append(sample)
+        # todo : 这里需要处理一下
+        normalized = normalized[:2]
+        print(normalized)
         return normalized
+
+    def _discover_image_root(self) -> Optional[Path]:
+        candidate_dirs = [
+            self.root / "images",
+            self.root.parent / "textvqa_image",
+        ]
+        for directory in candidate_dirs:
+            if directory.exists():
+                return directory
+        return None
+
+    def _resolve_image_path(self, identifier: str) -> str:
+        if not identifier:
+            return identifier
+        if identifier.startswith(("http://", "https://")):
+            return identifier
+        if self.image_root is None:
+            return identifier
+
+        path_obj = Path(identifier)
+        candidates = [path_obj.name]
+        if not path_obj.suffix:
+            candidates.extend(
+                [
+                    f"{path_obj.name}.jpg",
+                    f"{path_obj.name}.png",
+                    f"{path_obj.name}.jpeg",
+                ]
+            )
+
+        for candidate in candidates:
+            resolved = self.image_root / candidate
+            if resolved.exists():
+                return resolved.as_posix()
+        return identifier
 
     def _load_raw_item(self, sample_meta: Dict) -> Dict:
         image_candidate = sample_meta.get("image") or sample_meta.get("image_id")
@@ -64,10 +106,7 @@ class TextVQADataset(BasePMCDataset):
             or sample_meta.get("flickr_300k_url")
             or str(sample_meta["id"])
         )
-        if isinstance(image_candidate, str) and image_candidate.startswith(("http://", "https://")):
-            image_path = image_candidate
-        else:
-            image_path = (self.root / "images" / str(image_candidate)).as_posix()
+        image_path = self._resolve_image_path(str(image_candidate))
         return {
             "question": sample_meta["question"],
             "answer": sample_meta.get("answer"),

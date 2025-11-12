@@ -4,9 +4,20 @@ Light-weight feature builder that maps raw PMC samples into tensor inputs.
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import Dict, Optional
 
 import torch
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover - optional dependency
+    Image = None
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - optional dependency
+    np = None
 
 
 class SimpleFeatureBuilder:
@@ -46,22 +57,58 @@ class SimpleFeatureBuilder:
         return features
 
     def _encode_vision(self, key: str, corruption_report: Optional[Dict]) -> torch.Tensor:
-        generator = torch.Generator()
-        generator.manual_seed(self._hash_to_seed(key))
-        tokens = torch.randn(
-            self.vision_tokens,
-            self.hidden_size,
-            generator=generator,
-            dtype=self.dtype,
-        )
+        tokens = self._load_image_embedding(key)
+        if tokens is None:
+            tokens = self._generate_hashed_tokens(str(key))
+
         if corruption_report:
             severity = corruption_report.get("overall_uncertainty", 0.0)
             if severity > 0:
                 noise_gen = torch.Generator()
                 noise_gen.manual_seed(self._hash_to_seed(f"{key}_noise"))
-                noise = torch.randn_like(tokens, generator=noise_gen) * severity
+                noise = torch.randn(
+                    tokens.shape,
+                    generator=noise_gen,
+                    dtype=tokens.dtype,
+                    device=tokens.device,
+                ) * severity
                 tokens = tokens + noise
         return tokens
+
+    def _load_image_embedding(self, key: str) -> Optional[torch.Tensor]:
+        if not key or Image is None or np is None:
+            return None
+        key_str = str(key)
+        if key_str.startswith(("http://", "https://")):
+            return None
+        path = Path(key_str)
+        if not path.exists():
+            return None
+        try:
+            image = Image.open(path).convert("RGB")
+        except Exception:
+            return None
+        array = np.asarray(image, dtype=np.float32) / 255.0
+        if array.size == 0:
+            return None
+        flat = array.reshape(-1)
+        needed = self.vision_tokens * self.hidden_size
+        if flat.size < needed:
+            reps = (needed + flat.size - 1) // flat.size
+            flat = np.tile(flat, reps)
+        flat = flat[:needed]
+        tensor = torch.from_numpy(flat.copy()).to(self.dtype)
+        return tensor.view(self.vision_tokens, self.hidden_size)
+
+    def _generate_hashed_tokens(self, key: str) -> torch.Tensor:
+        generator = torch.Generator()
+        generator.manual_seed(self._hash_to_seed(key))
+        return torch.randn(
+            self.vision_tokens,
+            self.hidden_size,
+            generator=generator,
+            dtype=self.dtype,
+        )
 
     def _hash_to_vector(self, token: str) -> torch.Tensor:
         generator = torch.Generator()
