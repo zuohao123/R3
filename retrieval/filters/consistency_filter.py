@@ -18,7 +18,8 @@ class ConsistencyFilter:
                 continue
             doc_tokens = set(" ".join(doc.get("pseudo_text", [])).split())
             overlap = len(doc_tokens & pseudo_set)
-            if overlap == 0:
+            score = doc.get("retrieval_score", 0.0)
+            if overlap == 0 or score <= 0:
                 continue
             filtered.append(doc)
         return filtered

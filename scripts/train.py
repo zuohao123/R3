@@ -87,8 +87,12 @@ def main() -> None:
     corruption_cfg = CorruptionConfig(**cfg.get("corruption", {}))
     model_cfg = cfg.get("model", {})
     print("SimpleFeatureBuilder 开始")
+    backbone_name = model_cfg.get("backbone", "simple_decoder").lower()
+    feature_hidden = model_cfg.get("hidden_size")
+    if feature_hidden is None:
+        feature_hidden = model_cfg.get("qwen3_vl", {}).get("text_hidden_size", 4096) if backbone_name == "qwen3-vl" else 256
     feature_builder = SimpleFeatureBuilder(
-        hidden_size=model_cfg.get("hidden_size", 256),
+        hidden_size=feature_hidden,
         question_length=model_cfg.get("question_length", 32),
         vision_tokens=model_cfg.get("vision_tokens", 16),
     )

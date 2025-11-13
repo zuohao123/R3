@@ -33,7 +33,15 @@ class Trainer:
         self.consistency_loss = ConsistencyRegularizer()
 
     def _prepare_model_inputs(self, sample: Dict) -> Dict:
-        allowed_keys = {"question_tokens", "vision_tokens", "pseudo_text", "corruption_report", "answer"}
+        allowed_keys = {
+            "question_tokens",
+            "vision_tokens",
+            "pseudo_text",
+            "corruption_report",
+            "answer",
+            "question",
+            "image_path",
+        }
         return {key: sample[key] for key in allowed_keys if key in sample}
 
     def _move_to_device(self, batch: Dict) -> Dict:

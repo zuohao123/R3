@@ -12,15 +12,24 @@ retrieval:
   top_k: 5
   noise_threshold: 0.6
 model:
-  hidden_size: 256
-  question_length: 32
-  vision_tokens: 16
-  prefix_length: 32
-  memory_tokens: 16
-  imputation_tokens: 8
-  vocab_size: 8192
+  backbone: simple_decoder  # options: simple_decoder (mock), qwen3-vl (real backbone)
+  hidden_size: 512          # adapter hidden size when running the lightweight mock backbone
+  question_length: 64
+  vision_tokens: 32
+  prefix_length: 64
+  memory_tokens: 32
+  imputation_tokens: 16
+  vocab_size: 16384
+  gate_default: 0.65
+  qwen3_vl:
+    text_hidden_size: 4096      # real Qwen3-VL language tower width
+    vision_hidden_size: 1664    # CLIP-ViT-L/14 projector width
+    num_layers: 48
+    num_attention_heads: 32
+    vocab_size: 152064
+    max_position_embeddings: 32768
 training:
-  epochs: 3
+  epochs: 1
   lr_backbone: 1.0e-5
   lr_adapter: 5.0e-5
   log_interval: 20

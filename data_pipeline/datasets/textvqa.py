@@ -55,9 +55,8 @@ class TextVQADataset(BasePMCDataset):
                 elif isinstance(answers, dict) and "answer" in answers:
                     sample["answer"] = answers["answer"]
             normalized.append(sample)
-        # todo : 这里需要处理一下
+        # todo: 这里需要处理一下
         normalized = normalized[:2]
-        print(normalized)
         return normalized
 
     def _discover_image_root(self) -> Optional[Path]:

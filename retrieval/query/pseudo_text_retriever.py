@@ -27,11 +27,26 @@ class PseudoTextRetriever:
         query_tokens = " ".join([question] + pseudo_text).lower().split()
         scored: List[Tuple[float, Dict]] = []
         for doc in self.index:
-            doc_tokens = " ".join(doc["pseudo_text"]).lower().split()
+            doc_tokens = " ".join(doc.get("pseudo_text", [])).lower().split()
+            if not doc_tokens:
+                continue
             overlap = len(set(query_tokens) & set(doc_tokens))
-            scored.append((overlap, doc))
+            if overlap == 0:
+                continue
+            normalized = overlap / max(len(doc_tokens), 1)
+            scored.append((normalized, doc))
+        if not scored:
+            return []
         scored.sort(key=lambda x: x[0], reverse=True)
-        top_docs = [doc for score, doc in scored[: self.config.top_k] if score > 0]
+
+        dynamic_top_k = self.config.top_k
         if noise_score > self.config.noise_threshold:
-            top_docs = top_docs[: max(1, len(top_docs) // 2)]
+            reduction = min(noise_score, 0.95)
+            dynamic_top_k = max(1, int(self.config.top_k * (1.0 - reduction)))
+
+        top_docs: List[Dict] = []
+        for score, doc in scored[: dynamic_top_k]:
+            doc_copy = dict(doc)
+            doc_copy["retrieval_score"] = score
+            top_docs.append(doc_copy)
         return top_docs

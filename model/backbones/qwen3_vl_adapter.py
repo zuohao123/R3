@@ -22,7 +22,10 @@ class Qwen3VLAdapter(torch.nn.Module):
         pseudo_text: List[List[str]],
         retrieval: List[List[Dict]],
         corruption_report: List[Dict],
+        question: Optional[List[str]] = None,
+        image_path: Optional[List[str]] = None,
         answer: Optional[List[str]] = None,
+        **kwargs,
     ) -> Dict:
         gate_values = self.gate_controller(corruption_report, retrieval)
         enhanced_text, enhanced_memory, imputation = self.enhancer(
@@ -37,6 +40,9 @@ class Qwen3VLAdapter(torch.nn.Module):
             pseudo_text=pseudo_text,
             retrieval=retrieval,
             corruption_report=corruption_report,
+            question=question,
+            image_path=image_path,
+            **kwargs,
         )
         outputs["gate_values"] = gate_values
         return outputs

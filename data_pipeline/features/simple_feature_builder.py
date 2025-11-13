@@ -11,6 +11,7 @@ import torch
 
 try:
     from PIL import Image
+    from PIL import ImageDraw, ImageFilter
 except ImportError:  # pragma: no cover - optional dependency
     Image = None
 
@@ -57,7 +58,7 @@ class SimpleFeatureBuilder:
         return features
 
     def _encode_vision(self, key: str, corruption_report: Optional[Dict]) -> torch.Tensor:
-        tokens = self._load_image_embedding(key)
+        tokens = self._load_image_embedding(key, corruption_report)
         if tokens is None:
             tokens = self._generate_hashed_tokens(str(key))
 
@@ -75,7 +76,7 @@ class SimpleFeatureBuilder:
                 tokens = tokens + noise
         return tokens
 
-    def _load_image_embedding(self, key: str) -> Optional[torch.Tensor]:
+    def _load_image_embedding(self, key: str, corruption_report: Optional[Dict]) -> Optional[torch.Tensor]:
         if not key or Image is None or np is None:
             return None
         key_str = str(key)
@@ -88,6 +89,11 @@ class SimpleFeatureBuilder:
             image = Image.open(path).convert("RGB")
         except Exception:
             return None
+        image = self._apply_vision_corruption(
+            image,
+            corruption_report,
+            key_str,
+        )
         array = np.asarray(image, dtype=np.float32) / 255.0
         if array.size == 0:
             return None
@@ -119,3 +125,66 @@ class SimpleFeatureBuilder:
     def _hash_to_seed(value: str) -> int:
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
         return int(digest, 16)
+
+    def _apply_vision_corruption(
+        self,
+        image: "Image.Image",
+        corruption_report: Optional[Dict],
+        key: str,
+    ) -> "Image.Image":
+        if not corruption_report:
+            return image
+        vision_meta = corruption_report.get("modalities", {}).get("vision")
+        if not vision_meta:
+            return image
+        img = image.copy()
+        seed = self._hash_to_seed(f"{key}_vision")
+        rng = torch.Generator()
+        rng.manual_seed(seed)
+
+        blur_severity = vision_meta.get("severity", 0.0) if vision_meta.get("type") == "blur" else vision_meta.get("blur")
+        if blur_severity:
+            radius = max(0.5, float(blur_severity) * 5.0)
+            img = img.filter(ImageFilter.GaussianBlur(radius=radius))
+
+        occlusion = vision_meta.get("occlusion")
+        if occlusion:
+            img = self._apply_occlusion(img, float(occlusion), seed)
+
+        crop = vision_meta.get("crop")
+        if crop:
+            img = self._apply_crop(img, float(crop), seed)
+        return img
+
+    def _apply_occlusion(self, image: "Image.Image", severity: float, seed: int) -> "Image.Image":
+        severity = max(0.05, min(severity, 0.95))
+        width, height = image.size
+        occ_w = max(1, int(width * severity))
+        occ_h = max(1, int(height * severity * 0.6))
+
+        gen = torch.Generator()
+        gen.manual_seed(seed)
+        pos_x = int(torch.rand((), generator=gen).item() * max(1, width - occ_w))
+        pos_y = int(torch.rand((), generator=gen).item() * max(1, height - occ_h))
+
+        overlay = image.copy()
+        draw = ImageDraw.Draw(overlay)
+        draw.rectangle(
+            [pos_x, pos_y, pos_x + occ_w, pos_y + occ_h],
+            fill=(0, 0, 0),
+        )
+        return overlay
+
+    def _apply_crop(self, image: "Image.Image", severity: float, seed: int) -> "Image.Image":
+        severity = max(0.05, min(severity, 0.9))
+        width, height = image.size
+        crop_w = int(width * (1.0 - severity * 0.5))
+        crop_h = int(height * (1.0 - severity * 0.5))
+
+        gen = torch.Generator()
+        gen.manual_seed(seed + 1)
+        start_x = int(torch.rand((), generator=gen).item() * max(1, width - crop_w))
+        start_y = int(torch.rand((), generator=gen).item() * max(1, height - crop_h))
+
+        cropped = image.crop((start_x, start_y, start_x + crop_w, start_y + crop_h))
+        return cropped.resize((width, height), Image.BILINEAR)

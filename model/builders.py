@@ -7,13 +7,19 @@ from typing import Dict
 
 from model.backbones.qwen3_vl_adapter import Qwen3VLAdapter
 from model.backbones.simple_decoder import SimpleDecoder
+from model.backbones.qwen3_vl_real import Qwen3VLRealBackbone, QwenLoadConfig
 from model.modules.adaptive_gate import AdaptiveGateController
 from model.modules.tri_path_enhancer import TriPathEnhancer
 
 
 def build_r3_model(model_cfg: Dict | None = None) -> Qwen3VLAdapter:
     model_cfg = model_cfg or {}
-    hidden_size = model_cfg.get("hidden_size", 256)
+    backbone_name = model_cfg.get("backbone", "simple_decoder").lower()
+    qwen_cfg = model_cfg.get("qwen3_vl", {})
+    hidden_size = model_cfg.get("hidden_size")
+    if hidden_size is None:
+        hidden_size = qwen_cfg.get("text_hidden_size", 4096) if backbone_name == "qwen3-vl" else 256
+
     enhancer = TriPathEnhancer(
         hidden_size=hidden_size,
         prefix_length=model_cfg.get("prefix_length", 32),
@@ -21,5 +27,22 @@ def build_r3_model(model_cfg: Dict | None = None) -> Qwen3VLAdapter:
         imputation_tokens=model_cfg.get("imputation_tokens", 8),
     )
     gate_controller = AdaptiveGateController(default_value=model_cfg.get("gate_default", 0.7))
-    backbone = SimpleDecoder(hidden_size=hidden_size, answer_vocab=model_cfg.get("vocab_size", 8192))
+
+    if backbone_name == "qwen3-vl":
+        load_cfg = QwenLoadConfig(
+            pretrained_path=qwen_cfg.get("pretrained_path"),
+            torch_dtype=qwen_cfg.get("torch_dtype", "float16"),
+            device_map=qwen_cfg.get("device_map"),
+            device=qwen_cfg.get("device"),
+            trust_remote_code=qwen_cfg.get("trust_remote_code", True),
+        )
+        model_hidden_size = qwen_cfg.get("text_hidden_size", 4096)
+        backbone = Qwen3VLRealBackbone(
+            load_cfg=load_cfg,
+            input_hidden_size=hidden_size,
+            model_hidden_size=model_hidden_size,
+        )
+    else:
+        backbone = SimpleDecoder(hidden_size=hidden_size, answer_vocab=model_cfg.get("vocab_size", 8192))
+
     return Qwen3VLAdapter(backbone=backbone, enhancer=enhancer, gate_controller=gate_controller)

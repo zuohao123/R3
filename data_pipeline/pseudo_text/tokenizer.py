@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
+# todo 如果原始数据里面没有对应的ocr信息，可能需要一个过程来进行生成
 
 class PseudoTextTokenizer:
     def __init__(self, ocr_tag: str = "<OCR>", caption_tag: str = "<CAP>") -> None:
