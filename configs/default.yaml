@@ -1,40 +1,38 @@
 dataset:
-  name: textvqa
   root: ./data_pipeline/data/textvqa
-  batch_size: 4
-  num_workers: 2
-corruption:
-  blur_prob: 0.3
-  occlusion_prob: 0.3
-  crop_prob: 0.2
-  ocr_noise_prob: 0.4
-retrieval:
-  top_k: 5
-  noise_threshold: 0.6
+  split: train
+  eval_split: val
+  batch_size: 2
+  num_workers: 0
 model:
-  backbone: simple_decoder  # options: simple_decoder (mock), qwen3-vl (real backbone)
-  hidden_size: 512          # adapter hidden size when running the lightweight mock backbone
-  question_length: 64
-  vision_tokens: 32
-  prefix_length: 64
-  memory_tokens: 32
-  imputation_tokens: 16
-  vocab_size: 16384
-  gate_default: 0.65
-  qwen3_vl:
-    text_hidden_size: 4096      # real Qwen3-VL language tower width
-    vision_hidden_size: 1664    # CLIP-ViT-L/14 projector width
-    num_layers: 48
-    num_attention_heads: 32
-    vocab_size: 152064
-    max_position_embeddings: 32768
+  name: Qwen/Qwen3-VL-8B-Instruct
+  lora_rank: 32
+  lora_alpha: 16
+  hidden_size: 4096
+  provider: modelscope  # 可切换为 modelscope huggingface
+  token: null            # 私有模型可填 HF token 或魔搭 token
+  cache_dir: ./hf_cache
+  revision: null
+  local_files_only: false
+  enable_corruption: true
+  enable_retrieval: true
+  enable_prefix: true
+  enable_memory: true
+  enable_imputation: true
+  enable_consistency: true
+  lambda_consistency: 0.3
+  top_k: 3
+vision:
+  encoder: openai/clip-vit-large-patch14
+  device: cpu
+  cache_size: 256
 training:
   epochs: 1
-  lr_backbone: 1.0e-5
-  lr_adapter: 5.0e-5
-  log_interval: 20
+  log_interval: 10
+  learning_rate: 0.0002
+  weight_decay: 0.05
+  warmup_ratio: 0.05
 evaluation:
-  benchmarks:
-    - textvqa
-    - chartqa
-    - docvqa
+  split: val
+  apply_corruption: false
+  batch_size: 2

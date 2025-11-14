@@ -1,221 +1,252 @@
-# R³: Robust Multimodal Retrieval-Reconstruction-Reasoning Framework
+# R³: Retrieval–Reconstruction–Reasoning for Partial Modality Corruption
 
-R³ (Retrieval, Reconstruction, Reasoning) 是一个专为**部分模态损坏(PMC)**场景设计的鲁棒多模态问答框架，通过"腐蚀感知 + 伪文本检索 + 选择性重建"实现增强的鲁棒性和可解释性。
+R³ 是一个围绕“部分模态损坏（PMC）”设计的多模态问答框架，目标是在真实场景下应对模态缺失、噪声与不一致所带来的幻觉问题。该实现遵循论文引言中的五大组件，并围绕 **Qwen3-VL 家族（默认使用 Qwen/Qwen3-VL-8B-Instruct，亦可切换到 Qwen2.5-VL 系列）** 主干进行了适配与微调（LoRA/QLoRA），同时具备可扩展的训练脚本与配置。
 
-## 🏗️ 框架架构概览
+---
 
-R³框架通过五个核心阶段实现鲁棒的多模态问答：
+## 🧱 核心组件
 
-graph TB
-    subgraph "阶段1: 数据流水线"
-        A1[原始数据集] --> A2[腐蚀模拟器]
-        A2 --> A3[伪文本生成器]
-        A3 --> A4[特征构建器]
-        A4 --> A5[PMC数据模块]
+| 模块 | 文件 | 核心职责 |
+|------|------|-----------|
+| **CorruptionSimulator** | [`r3/corruption_simulator.py`](r3/corruption_simulator.py) | 基于 token 特征预测置信度并按需注入噪声/遮挡，输出 `(features, confidence masks)`，在推理阶段仅估计置信度。 |
+| **PseudoText Retrieval Module** | [`r3/retrieval_module.py`](r3/retrieval_module.py) | 以伪文本 + 置信度构建查询，噪声感知地筛选 top-K 证据，供后续前缀/记忆/填补使用。 |
+| **SelectiveReconstructor** | [`r3/reconstructor.py`](r3/reconstructor.py) | 实现三路径融合：可解释前缀（Prefix Path）、跨模态记忆对齐（Memory Path）、语义填补（Latent Imputation Path），并通过门控函数调节。 |
+| **R³ Model** | [`r3/r3_model.py`](r3/r3_model.py) | 将重建后的输入送入 Qwen3-VL/Qwen2.5-VL 主干，注入 LoRA/QLoRA，计算多目标损失 `L_total = L_task + λ_con L_cons + λ_aln L_align + λ_ref L_refuse + λ_ops L_ops`。 |
+| **训练脚本** | [`train_r3.py`](train_r3.py) | 负责数据加载、腐蚀模拟、检索、重建、模型前向与训练循环，支持混合精度、课程学习和多 GPU。 |
+| **评估脚本** | [`evaluate_r3.py`](evaluate_r3.py) | PMC场景下的模型评估，支持Accuracy/ANLS指标计算。 |
+| **伪文本构建** | [`build_pseudo_text.py`](build_pseudo_text.py) | 离线构建伪文本语料库，支持OCR和Caption生成。 |
+
+此外，原有的数据流水线（`data_pipeline/`）、伪文本生成器、Vision Encoder 依旧可复用，用于快速导入 TextVQA、ChartQA、DocVQA 等数据集。
+
+---
+
+## 🔄 端到端流程
+
+flowchart LR
+    subgraph Stage0["数据与配置"]
+        D0[TextVQA/ChartQA/DocVQA] --> D1[BasePMCDataset]
+        D1 --> D2[样本: {image, question, answer, extra}]
     end
-    
-    subgraph "阶段2: 知识检索"
-        B1[语料库构建] --> B2[伪文本检索器]
-        B2 --> B3[一致性过滤器]
-    end
-    
-    subgraph "阶段3: 自适应重建"
-        C1[自适应门控器] --> C2[三路径增强器]
-        C2 --> C3[Qwen3-VL适配器]
-    end
-    
-    subgraph "阶段4: 训练优化"
-        D1[训练器] --> D2[一致性正则器]
-        D2 --> D3[联合损失优化]
-    end
-    
-    subgraph "阶段5: 评估分析"
-        E1[PMC评估器] --> E2[幻觉检测]
-        E2 --> E3[结果导出器]
-    end
-    
-    A5 --> D1
-    B3 --> C1
-    C3 --> D1
-    D3 --> E1
 
-## 📦 环境依赖
+    subgraph Stage1["腐蚀模拟 (CorruptionSimulator)"]
+        D2 --> C1[视觉腐蚀: blur/noise/occlusion/crop]
+        D2 --> C2[文本腐蚀: OCR noise/token drop/bbox drop]
+        C1 --> C3[Ĩ]
+        C2 --> C4[Q̃]
+        C3 & C4 --> C5[不确定性掩码 U]
+    end
 
-基于 [`requirements.txt`](./requirements.txt)：
+    subgraph Stage2["伪文本与检索 (PseudoText Retrieval)"]
+        C4 --> R1[PseudoTextBuilder]
+        R1 --> R2[结构化条目 E={span,bbox,conf,src}]
+        R2 --> R3[BM25 + Vector + Cross-Encoder]
+        C5 --> R3
+        R3 --> R4[top-k 证据 {E1..Ek}, 得分 s_i]
+    end
 
-torch>=2.1          # 深度学习框架
-pyyaml>=6.0         # 配置文件解析  
-numpy>=1.24         # 数值计算
-pillow>=10.0        # 图像处理
-transformers>=4.39  # 预训练模型支持
+    subgraph Stage3["选择性重建 (SelectiveReconstructor)"]
+        R4 --> S1[Prefix Path: 证据前缀]
+        R4 --> S2[Memory Path: 证据记忆库]
+        C5 --> S3[Imputation Path: [IMPUTE_v/t]]
+        S1 & S2 & S3 --> S4[增强后的多模输入]
+    end
 
-安装依赖：
+    subgraph Stage4["ReasoningHead (Qwen3-VL/Qwen2.5-VL + LoRA)"]
+        S4 --> M1[Qwen-VL]
+        M1 --> M2[Answer + Evidence IDs or REFUSE]
+        M1 --> M3[多任务损失]
+    end
+
+---
+
+## ⚙️ 训练配置与损失
+
+训练包含 clean/corrupted 双分支，并使用统一答案或拒答标签。`train_r3.py` 中默认开启以下损失：
+
+- `L_task`：主任务 SeqCE（Qwen 自带 loss）
+- `L_consistency`：clean/corrupted logits 的 KL
+- `L_align`：cross-attn（记忆得分）与检索得分对齐
+- `L_refuse`：证据不足时的拒答监督（BCE）
+- `L_ops`：图表/表格任务的算子一致性（CE/L1）
+
+课程学习阶段：
+1. Phase-0（clean）
+2. Phase-1（轻/中度 PMC）
+3. Phase-2（重度 PMC + 拒答监督）  
+默认比例 3:2:1，可按 `configs/default.yaml` 调整。
+
+优化器：AdamW (lr=2e-4, weight_decay=0.05) + Cosine decay + 5% warmup。  
+训练建议：batch=2-4（受显存限制）、epochs=1-3、bf16 + gradient checkpoint。
+
+---
+
+## 📂 关键代码概览
+
+r3/
+├── corruption_simulator.py   # 视觉/文本腐蚀 + 不确定性掩码
+├── retrieval_module.py       # PseudoText Retrieval + Noise-Aware Filter
+├── reconstructor.py          # Prefix/Memory/Imputation 三路径融合
+└── r3_model.py               # Qwen-VL + LoRA + 多任务损失
+
+train_r3.py                   # 训练入口（含腐蚀、检索、重建）
+evaluate_r3.py                # 评估脚本
+build_pseudo_text.py          # 伪文本语料构建
+
+其他重要模块：
+
+- `data_pipeline/`：数据集解析（`datasets/`）、伪文本处理（`pseudo_text.py`）、视觉编码（`vision_encoder.py`）。
+- `configs/`：配置文件，包含数据集、模型、训练等各模块参数。
+
+---
+
+## 🚀 使用指南
+
+### 1. 安装依赖
 pip install -r requirements.txt
 
-## 🚀 快速开始
+### 2. 准备数据集
+vim configs/default.yaml  # 设置 dataset.root, split, batch_size 等
 
-### 1. 配置数据集
-# 编辑配置文件
-vim configs/default.yaml
-# 确保 dataset.root 指向正确的数据集目录
+### 3. 训练 R³
+python train_r3.py --config configs/default.yaml --device cuda --output_dir checkpoints/r3_lora
 
-### 2. 构建检索索引
-# 生成伪文本语料库
-python scripts/build_index.py --input data/samples.jsonl --output runs/index
+### 4. 评估模型
+python evaluate_r3.py \
+  --config configs/default.yaml \
+  --checkpoint checkpoints/r3_lora \
+  --split val \
+  --predictions artifacts/val_preds.jsonl
 
-### 3. 训练模型
-# 启动训练流程
-python scripts/train.py \
-    --config configs/default.yaml \
-    --index runs/index/corpus.jsonl \
-    --device cuda \
-    --epochs 10 \
-    --batch-size 8
+### 5. 构建伪文本语料（可选）
+python build_pseudo_text.py \
+  --dataset_root ./data_pipeline/data/textvqa \
+  --split train \
+  --output ./artifacts/pseudo_text_train.jsonl \
+  --enable_ocr \
+  --caption_model qwen/Qwen2-VL-2B-Instruct
 
-### 4. 模型评估
-# PMC场景评估
-python eval/evaluate_pmc.py --model_path runs/model.pt
+---
 
-# 完整模态基线对比
-python eval/evaluate_full.py --model_path runs/model.pt
+## ⚙️ 配置文件说明
 
-# 结果导出
-python scripts/export_results.py --input runs/results.json
+基于 [`configs/default.yaml`](./configs/default.yaml)：
 
-## 🔄 详细架构流程
+| 模块 | 参数 | 默认值 | 说明 |
+|-----|------|--------|------|
+| **数据集** | `root` | ./data_pipeline/data/textvqa | 数据集根目录 |
+| | `split` | train | 训练数据分割 |
+| | `batch_size` | 2 | 批处理大小 |
+| | `num_workers` | 0 | 数据加载进程数 |
+| **模型配置** | `name` | Qwen/Qwen3-VL-8B-Instruct | 主干网络名称 |
+| | `lora_rank` | 32 | LoRA秩 |
+| | `lora_alpha` | 16 | LoRA缩放因子 |
+| | `hidden_size` | 4096 | 隐层维度 |
+| | `provider` | huggingface / modelscope | 模型下载来源（HF 或魔搭） |
+| | `token` | null | 私有仓库下载 Token（HF 或魔搭） |
+| | `cache_dir` | ./hf_cache | 模型缓存目录 |
+| | `revision` | null | 指定分支/版本 |
+| | `local_files_only` | false | 仅使用本地缓存 |
+| | `enable_corruption` | true | R³ Stage-1 开关 |
+| | `enable_retrieval` | true | R³ Stage-2 开关 |
+| | `enable_prefix` | true | 三路径：文本前缀 |
+| | `enable_memory` | true | 三路径：证据记忆 |
+| | `enable_imputation` | true | 三路径：语义填补 |
+| | `enable_consistency` | true | 全模态一致性约束 |
+| | `lambda_consistency` | 0.3 | 一致性损失系数 |
+| | `top_k` | 3 | 检索证据数量 |
+| **视觉编码** | `encoder` | openai/clip-vit-large-patch14 | 视觉编码器模型 |
+| | `device` | cpu | 编码器运行设备 |
+| | `cache_size` | 256 | 缓存大小 |
+| **训练配置** | `epochs` | 1 | 训练轮数 |
+| | `learning_rate` | 0.0002 | 学习率 |
+| | `weight_decay` | 0.05 | 权重衰减 |
+| | `warmup_ratio` | 0.05 | 预热比例 |
+| | `log_interval` | 10 | 日志输出间隔 |
 
-### 阶段1️⃣: 数据预处理与腐蚀模拟
+---
 
-**核心文件**: [`data_pipeline/`](./data_pipeline/)
+## 🧠 与 Qwen-VL 的适配
 
-graph LR
-    subgraph "数据加载"
-        A1[TextVQA/ChartQA/DocVQA] --> A2[base_dataset.py]
-        A2 --> A3["{id, question, image_path, answer, extra}"]
-    end
-    
-    subgraph "腐蚀模拟"
-        A3 --> B1[simulator.py]
-        B1 --> B2["视觉: blur(30%), occlude(30%), crop(20%)"]
-        B1 --> B3["文本: OCR noise(40%) → <UNK>"]
-        B2 --> B4[corruption_report]
-        B3 --> B4
-    end
-    
-    subgraph "特征构建"
-        A3 --> C1[simple_feature_builder.py]
-        B4 --> C1
-        C1 --> C2["question_tokens[batch×64×512]"]
-        C1 --> C3["vision_tokens[batch×32×512]"]
-    end
-    
-    subgraph "伪文本生成"
-        A3 --> D1[tokenizer.py]
-        D1 --> D2["['<OCR> text </OCR>', '<CAP> caption </CAP>']"]
-    end
-    
-    subgraph "数据模块集成"
-        C2 --> E1[pmc_datamodule.py]
-        C3 --> E1
-        D2 --> E1
-        B4 --> E1
-        E1 --> E2["{full_sample, corrupted_sample, pseudo_text, corruption_report}"]
-    end
+- Qwen3-VL/Qwen2.5-VL 由 `r3/r3_model.py` 加载，自动注入 `[IMPUTE_V]`、`[IMPUTE_T]` 等特征 token。
+- LoRA/QLoRA 通过 `peft` 注入 `q_proj/k_proj/v_proj/o_proj/vision_proj`。
+- 重建后的文本前缀与记忆向量会以 `inputs_embeds` 方式拼接到 Qwen 输入；imputation tokens 用于填补语义空洞。
+- ReasoningHead 输出 `(answer, evidence_ids)` 或 REFUSE，并同步提供多任务损失。
 
-**关键实现**:
-- **数据加载**: [`base_dataset.py`](./data_pipeline/datasets/base_dataset.py) 定义统一接口，[`textvqa.py`](./data_pipeline/datasets/textvqa.py) / [`chartqa.py`](./data_pipeline/datasets/chartqa.py) / [`docvqa.py`](./data_pipeline/datasets/docvqa.py) 实现具体数据集
-- **腐蚀模拟**: [`simulator.py`](./data_pipeline/corruption/simulator.py) 基于概率配置实现视觉/文本腐蚀
-- **特征构建**: [`simple_feature_builder.py`](./data_pipeline/features/simple_feature_builder.py) 生成固定维度的张量特征
-- **伪文本生成**: [`tokenizer.py`](./data_pipeline/pseudo_text/tokenizer.py) 将多模态内容转换为文本片段
-- **数据模块**: [`pmc_datamodule.py`](./data_pipeline/dataloaders/pmc_datamodule.py) 统一封装，支持批处理和数据加载
+---
 
-### 阶段2️⃣: 知识检索与一致性过滤
+## 🔧 数据处理流水线
 
-**核心文件**: [`retrieval/`](./retrieval/)
+### 数据集支持
+- **TextVQA**: [`data_pipeline/datasets/textvqa.py`](data_pipeline/datasets/textvqa.py)
+- **ChartQA**: [`data_pipeline/datasets/chartqa.py`](data_pipeline/datasets/chartqa.py)  
+- **DocVQA**: [`data_pipeline/datasets/docvqa.py`](data_pipeline/datasets/docvqa.py)
 
-graph LR
-    subgraph "语料库构建"
-        A1[伪文本样本] --> A2[build_corpus.py]
-        A2 --> A3[corpus.jsonl]
-    end
-    
-    subgraph "相似度检索"
-        A3 --> B1[pseudo_text_retriever.py]
-        B2[question + pseudo_text + uncertainty] --> B1
-        B1 --> B3["Token重叠度 + 噪声阈值"]
-        B3 --> B4[Top-K候选文档]
-    end
-    
-    subgraph "一致性过滤"
-        B4 --> C1[consistency_filter.py]
-        C1 --> C2["过滤矛盾和无关证据"]
-        C2 --> C3[高质量检索结果]
-    end
+### 伪文本处理
+- **构建器**: [`data_pipeline/pseudo_text.py`](data_pipeline/pseudo_text.py) - 可按需离线聚合 OCR / Caption / Table 信息
+- **在线伪文本**: `train_r3.R3Dataset` 会自动把 OCR/Captions 转成伪文本列表交给检索模块，无需额外索引
 
-**关键实现**:
-- **语料构建**: [`build_corpus.py`](./retrieval/indexer/build_corpus.py) + [`scripts/build_index.py`](./scripts/build_index.py)
-- **检索引擎**: [`pseudo_text_retriever.py`](./retrieval/query/pseudo_text_retriever.py) 基于token重叠度和动态Top-K策略
-- **一致性过滤**: [`consistency_filter.py`](./retrieval/filters/consistency_filter.py) 去除矛盾和低质量证据
+### 视觉特征处理
+- **编码器**: [`data_pipeline/vision_encoder.py`](data_pipeline/vision_encoder.py) - 支持CLIP等预训练视觉模型
+- **回退机制**: 图像无法访问时使用确定性随机特征，保证训练稳定性
 
-### 阶段3️⃣: 自适应重建与推理
+### 模块开关
+- `model.enable_corruption / enable_retrieval / enable_prefix / enable_memory / enable_imputation / enable_consistency` 控制 R³ 三大模块及一致性分支，可在 `configs/default.yaml` 中逐项消融。
+- `model.top_k` 控制检索证据数量；其余超参（LoRA rank/dim、hidden_size 等）也集中于 `model` 段，便于统一管理。
 
-**核心文件**: [`model/`](./model/)
+### 权重下载与国内镜像
+1. **HuggingFace**：执行 `huggingface-cli login` 并下载 `Qwen/Qwen3-VL-8B-Instruct`；若使用国内镜像，可提前设置  
+   ```bash
+   export HF_ENDPOINT=https://hf-mirror.com
+   export HF_HOME=./hf_cache
+   ```
+2. **魔搭 ModelScope**（“魔塔”）：在 `configs/default.yaml` 中把 `model.provider` 改为 `modelscope`，并填入 `model.token`（若仓库受限）。运行时会自动通过 `modelscope.snapshot_download` 缓存到 `model.cache_dir`。  
+3. 如已手动下载本地权重，可把 `model.cache_dir` 指到相应路径或将 `model.name` 直接设为本地目录，训练脚本会优先使用本地文件。
 
-graph TB
-    subgraph "输入处理"
-        A1[question_tokens] --> B1[自适应门控器]
-        A2[vision_tokens] --> B1
-        A3[检索证据] --> B1
-        A4[腐蚀报告] --> B1
-    end
-    
-    subgraph "门控逻辑"
-        B1 --> B2["text_gate = 0.65 - 0.4×uncertainty + 0.2×retrieval_quality"]
-        B1 --> B3["memory_gate = 0.65 × (0.5 + retrieval_quality)"]
-        B1 --> B4["imputation_gate = 0.65 + 0.5×uncertainty - 0.2×retrieval_quality"]
-    end
-    
-    subgraph "三路径增强"
-        B2 --> C1["文本前缀路径<br/>prefix_encoder(question[:64])"]
-        B3 --> C2["跨模态记忆<br/>memory_adapter(question[:32])"]
-        B4 --> C3["潜空间填充<br/>learnable_embeddings[16×512]"]
-    end
-    
-    subgraph "主干推理"
-        C1 --> D1[Qwen3VL适配器]
-        C2 --> D1
-        C3 --> D1
-        D1 --> D2["answer_logits + loss + gate_values"]
-    end
+---
 
-**关键实现**:
-- **自适应门控**: [`adaptive_gate.py`](./model/modules/adaptive_gate.py) 根据腐蚀不确定性和检索质量动态调整权重
-- **三路径增强**: [`tri_path_enhancer.py`](./model/modules/tri_path_enhancer.py) 实现文本前缀、跨模记忆、潜空间填充
-- **模型适配器**: [`qwen3_vl_adapter.py`](./model/backbones/qwen3_vl_adapter.py) 统一封装门控器、增强器、主干网络
-- **模型构建**: [`builders.py`](./model/builders.py) 提供模型实例化工厂函数
+## 📈 预期收益
 
-### 阶段4️⃣: 一致性约束与联合训练
+- 在 PMC 条件下显著降低幻觉（≥25%）。
+- 在 TextVQA、ChartQA、DocVQA、InfographicVQA 等基准上提升鲁棒性。
+- 输出具备可解释性：答案附带证据 ID，可用于可视化或审计。
+- 支持拒答机制，在证据不足时避免强制回答。
 
-**核心文件**: [`train/`](./train/) + [`model/losses/`](./model/losses/)
+---
 
-graph LR
-    subgraph "双路径前向"
-        A1[corrupted_sample] --> B1[模型前向传播]
-        A2[full_sample] --> B2[模型前向传播]
-        A3[检索结果] --> B1
-        A3 --> B2
-    end
-    
-    subgraph "损失计算"
-        B1 --> C1[outputs_corrupted]
-        B2 --> C2[outputs_full]
-        C1 --> C3["QA损失<br/>(CrossEntropy)"]
-        C1 --> D1[consistency_regularizer.py]
-        C2 --> D1
-        D1 --> D2["一致性损失<br/>(KL Divergence)"]
-    end
-    
-    subgraph "优化更新"
-        C3 --> E1["总损失 = QA + Consistency"]
-        D2 --> E1
-        E1 --> E2
+## 🛠️ 后续扩展
+
+- 支持更强的向量检索（FAISS、ColBERT-v2），或引入多模态 cross-encoder。
+- 将 Memory Path 接入 Qwen 内部 cross-attention（`attn_processors`），进一步提升对齐质量。
+- 引入真实图像编码器（如 EVA-02）替代当前的 CLIP 视觉 embedding。
+- 补充课程学习调度（clean→mild→heavy）与分布式训练支持。
+- 扩展到更多多模态基准和任务类型。
+
+---
+
+## 📁 项目结构
+
+R³/
+├── 🚀 train_r3.py                    # 训练入口脚本
+├── 📊 evaluate_r3.py                 # 评估脚本
+├── 🔨 build_pseudo_text.py           # 伪文本语料构建
+├── 📋 requirements.txt               # 依赖包列表
+├── ⚙️ configs/                       # 配置文件
+│   └── default.yaml                 # 默认配置
+├── 🧠 r3/                           # R³核心模块
+│   ├── corruption_simulator.py     # 模态腐蚀模拟器
+│   ├── retrieval_module.py         # 混合检索系统
+│   ├── reconstructor.py            # 选择性重建器
+│   └── r3_model.py                  # R³主模型
+└── 📊 data_pipeline/                # 数据处理流水线
+    ├── datasets/                    # 数据集加载器
+    │   ├── base_dataset.py         # 基础数据接口
+    │   ├── textvqa.py              # TextVQA数据集
+    │   ├── chartqa.py              # ChartQA数据集
+    │   └── docvqa.py               # DocVQA数据集
+    ├── pseudo_text.py              # 伪文本处理
+    ├── vision_encoder.py           # 视觉特征编码
+    └── data/                       # 示例数据
+
+---
+
+欢迎根据业务场景继续扩展 R³，也期待社区反馈，共同推进“可解释、可恢复”的多模态智能。

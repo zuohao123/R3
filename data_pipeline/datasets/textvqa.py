@@ -37,6 +37,8 @@ class TextVQADataset(BasePMCDataset):
             raise ValueError(f"Unsupported annotation payload type: {type(annotations).__name__}")
 
         normalized: List[Dict] = []
+        # todo
+        entries = entries[:2]
         for idx, raw in enumerate(entries):
             sample = dict(raw)
             sample_id = (
@@ -55,8 +57,8 @@ class TextVQADataset(BasePMCDataset):
                 elif isinstance(answers, dict) and "answer" in answers:
                     sample["answer"] = answers["answer"]
             normalized.append(sample)
-        # todo: 这里需要处理一下
-        normalized = normalized[:2]
+        # todo 数据样例
+        print(normalized)
         return normalized
 
     def _discover_image_root(self) -> Optional[Path]:
@@ -106,9 +108,43 @@ class TextVQADataset(BasePMCDataset):
             or str(sample_meta["id"])
         )
         image_path = self._resolve_image_path(str(image_candidate))
+        extra = {
+            # 统一附带 OCR / Caption / Table 字段，方便后续伪文本构建
+            "ocr_tokens": self._normalize_ocr_tokens(sample_meta.get("ocr_tokens") or []),
+            "captions": sample_meta.get("captions", []),
+            "tables": sample_meta.get("tables", []),
+            "metadata": {
+                "dataset": "TextVQA",
+                "split": self.split,
+            },
+        }
         return {
             "question": sample_meta["question"],
             "answer": sample_meta.get("answer"),
             "image_path": image_path,
-            "extra": {"ocr_tokens": sample_meta.get("ocr_tokens", [])},
+            "extra": extra,
         }
+
+    def _normalize_ocr_tokens(self, tokens: List) -> List[Dict]:
+        # 不同数据版本的 OCR 格式不一致，这里统一为 dict 形式，便于下游处理
+        normalized: List[Dict] = []
+        for token in tokens:
+            if isinstance(token, str):
+                normalized.append(
+                    {
+                        "text": token,
+                        "bbox": [0, 0, 0, 0],
+                        "conf": 1.0,
+                        "src": "ocr",
+                    }
+                )
+            elif isinstance(token, dict):
+                normalized.append(
+                    {
+                        "text": token.get("text", ""),
+                        "bbox": token.get("bbox", [0, 0, 0, 0]),
+                        "conf": token.get("conf", 1.0),
+                        "src": token.get("src", "ocr"),
+                    }
+                )
+        return normalized
