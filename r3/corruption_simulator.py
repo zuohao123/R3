@@ -8,6 +8,7 @@ from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 @dataclass
@@ -17,6 +18,8 @@ class CorruptionModuleConfig:
     image_dropout: float = 0.15
     text_dropout: float = 0.15
     noise_scale: float = 0.05
+    block_dropout: float = 0.15   # contiguous occlusion over image tokens
+    blur_strength: float = 0.5    # blend factor for blurred features when masked
 
 
 class UncertaintyAwareCorruptionSimulator(nn.Module):
@@ -53,25 +56,12 @@ class UncertaintyAwareCorruptionSimulator(nn.Module):
         img_conf = torch.sigmoid(self.img_conf_head(vision_feats)).squeeze(-1)
         txt_conf = torch.sigmoid(self.txt_conf_head(text_feats)).squeeze(-1)
 
-        if not (self.training and apply_corruption and self.config.enable):
-            return vision_feats, text_feats, img_conf, txt_conf
-
-        vision_feats = self._apply_image_corruption(vision_feats, img_conf)
-        text_feats = self._apply_text_corruption(text_feats, txt_conf)
+        # 模型级腐蚀已取消；仅输出置信度用于后续模块
         return vision_feats, text_feats, img_conf, txt_conf
 
-    def _apply_image_corruption(self, feats: torch.Tensor, conf: torch.Tensor) -> torch.Tensor:
-        keep_prob = conf.unsqueeze(-1)
-        dropout_mask = torch.bernoulli(
-            keep_prob.clamp(min=1.0 - self.config.image_dropout)
-        )
-        noise = torch.randn_like(feats) * self.config.noise_scale * (1 - keep_prob)
-        return feats * dropout_mask + noise
+    # 保留占位函数以兼容旧调用，但不再做任何腐蚀
+    def _apply_image_corruption(self, feats: torch.Tensor, conf: torch.Tensor) -> torch.Tensor:  # pragma: no cover
+        return feats
 
-    def _apply_text_corruption(self, feats: torch.Tensor, conf: torch.Tensor) -> torch.Tensor:
-        keep_prob = conf.unsqueeze(-1)
-        mask = torch.bernoulli(
-            keep_prob.clamp(min=1.0 - self.config.text_dropout)
-        )
-        noise = torch.randn_like(feats) * self.config.noise_scale * (1 - keep_prob)
-        return feats * mask + noise
+    def _apply_text_corruption(self, feats: torch.Tensor, conf: torch.Tensor) -> torch.Tensor:  # pragma: no cover
+        return feats

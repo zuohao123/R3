@@ -4,6 +4,7 @@ dataset:
   eval_split: val
   batch_size: 2
   num_workers: 0
+  pseudo_corpus: null   # optional path to build_pseudo_text.py output JSONL for offline pseudo-text
 model:
   name: Qwen/Qwen3-VL-8B-Instruct
   lora_rank: 32
@@ -22,10 +23,6 @@ model:
   enable_consistency: true
   lambda_consistency: 0.3
   top_k: 3
-vision:
-  encoder: openai/clip-vit-large-patch14
-  device: cpu
-  cache_size: 256
 training:
   epochs: 1
   log_interval: 10
