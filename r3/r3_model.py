@@ -10,7 +10,7 @@ import torch
 
 from r3.base_vlm import BaseVLM, BaseVLMConfig
 from r3.corruption_simulator import CorruptionModuleConfig, UncertaintyAwareCorruptionSimulator
-from r3.reconstructor import ReconstructionModuleConfig, SelectiveReconstruction
+from r3.reconstructor import ReconstructionModuleConfig, SelectiveReconstruction, TriPathReasoner
 from r3.retrieval_module import PseudoTextRetrievalModule, RetrievalModuleConfig
 
 
@@ -35,6 +35,8 @@ class R3ModelConfig:
     enable_imputation: bool = True
     enable_consistency: bool = True
     lambda_consistency: float = 0.3
+    retrieval_cache_path: Optional[str] = None
+    retrieval_corpus_path: Optional[str] = None
 
 
 class R3Model(torch.nn.Module):
@@ -69,6 +71,7 @@ class R3Model(torch.nn.Module):
                 hidden_size=config.hidden_size,
                 top_k=config.top_k,
                 enable=config.enable_retrieval,
+                cache_path=config.retrieval_cache_path,
             ),
             embedding_layer=self.base_vlm.model.get_input_embeddings(),
         )
@@ -83,6 +86,12 @@ class R3Model(torch.nn.Module):
                 enable_imputation=config.enable_imputation,
             )
         )
+        self.reasoner = TriPathReasoner(config.hidden_size)
+        if config.retrieval_corpus_path:
+            try:
+                self.retrieval.ingest_corpus(config.retrieval_corpus_path)
+            except Exception:
+                pass
 
     def forward(
         self,
@@ -95,12 +104,12 @@ class R3Model(torch.nn.Module):
     ) -> Dict[str, torch.Tensor | Dict]:
         """
         Args:
-            input_ids: tokenized text input.
-            pixel_values: pre-extracted vision embeddings (b, num_img_tokens, dim).
-            attention_mask: text attention mask.
-            labels: supervision for the text tokens (matching text length).
-            pseudo_text: OCR / caption strings.
-            is_clean_branch: toggles teacher vs. student pass.
+            input_ids: 文本 token 序列。
+            pixel_values: 视觉嵌入（已编码为图像 token 序列，形状 b x num_img_tokens x dim）。
+            attention_mask: 文本注意力掩码。
+            labels: 文本监督标签（与 input_ids 对齐）。
+            pseudo_text: OCR/Caption/上下文伪文本。
+            is_clean_branch: True 为教师分支（不回传梯度、不走检索/重建），False 为学生分支（完整 R³ 流程）。
         """
         pseudo_text = pseudo_text or [[] for _ in range(input_ids.size(0))]
         text_embeddings = self.base_vlm.model.get_input_embeddings()(input_ids)
@@ -126,7 +135,7 @@ class R3Model(torch.nn.Module):
         labels: Optional[torch.Tensor],
     ) -> Dict[str, torch.Tensor | None]:
         """
-        Teacher branch: bypass simulator + retrieval to save memory.
+        教师分支：仅做前向，跳过模拟器/检索/重建，加速且不占显存。
         """
         with torch.no_grad():
             combined_inputs, combined_attention, padded_labels = self._merge_modalities(
@@ -159,17 +168,20 @@ class R3Model(torch.nn.Module):
         labels: Optional[torch.Tensor],
         pseudo_text: Sequence[Sequence[str]],
     ) -> Dict[str, torch.Tensor | Dict]:
+        # 1) 模拟器：仅产出置信度，不改写 token
         vision_embeddings, text_embeddings, img_conf, txt_conf = self.simulator(
             vision_embeddings,
             text_embeddings,
             apply_corruption=True,
         )
+        # 2) 检索：使用伪文本（或外部库）+ 置信度做噪声感知召回
         retrieval = self.retrieval(
             text_embeddings,
             pseudo_text,
             img_conf,
             txt_conf,
         )
+        # 3) 重建：前缀/记忆/填补融合
         recon_out = self.reconstruction(
             text_embeddings,
             text_attention,
@@ -178,8 +190,10 @@ class R3Model(torch.nn.Module):
             img_conf,
             txt_conf,
         )
+        # 4) TriPathReasoner 再细化融合后的 token
+        refined_text = self.reasoner(recon_out["inputs_embeds"], recon_out["attention_mask"])
         combined_inputs, combined_attention, padded_labels = self._merge_modalities(
-            recon_out["inputs_embeds"],
+            refined_text,
             recon_out["attention_mask"],
             vision_embeddings,
             labels,

@@ -12,19 +12,23 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 from data_pipeline.datasets.textvqa import TextVQADataset
-from data_pipeline.vision_encoder import VisionEncoder
+from data_pipeline.datasets.mp_docvqa import MPDocVQADataset
+from data_pipeline.datasets.infovqa import InfoVQADataset
+from data_pipeline.corruptions import ImageCorruptor, PseudoTextCorruptor
 from r3.r3_model import R3Model, R3ModelConfig
-from train_r3 import R3Dataset, collate_fn, load_yaml
+from train_r3 import R3Dataset, collate_fn, load_yaml, load_pseudo_corpus
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate R^3 checkpoints.")
     parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
-    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, default=None, help="Path to finetuned checkpoint; if omitted, use base backbone.")
     parser.add_argument("--split", type=str, default=None, help="Override dataset split for evaluation.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap for quick smoke tests.")
     parser.add_argument("--predictions", type=Path, default=None, help="Optional JSONL to dump predictions.")
+    parser.add_argument("--dataset_type", type=str, default="textvqa", choices=["textvqa", "mp_docvqa", "infovqa"])
+    parser.add_argument("--apply_corruption", action="store_true", help="Apply pre-encoding modality drops (Image/Pseudo-text).")
     return parser.parse_args()
 
 
@@ -78,26 +82,25 @@ def main() -> None:
     dataset_cfg = cfg.get("dataset", {})
     eval_cfg = cfg.get("evaluation", {})
     split = args.split or eval_cfg.get("split") or dataset_cfg.get("eval_split", "val")
-    apply_corruption = eval_cfg.get("apply_corruption", False)
+    apply_corruption = args.apply_corruption or eval_cfg.get("apply_corruption", False)
 
     dataset_root = Path(dataset_cfg["root"])
-    base_dataset = TextVQADataset(dataset_root, split=split)
-
-    vision_cfg = cfg.get("vision", {})
-    vision_encoder = None
-    if vision_cfg.get("encoder"):
-        vision_encoder = VisionEncoder(
-            model_name=vision_cfg.get("encoder", "openai/clip-vit-large-patch14"),
-            device=vision_cfg.get("device", "cpu"),
-            cache_size=vision_cfg.get("cache_size", 256),
-        )
+    pseudo_corpus = load_pseudo_corpus(dataset_cfg.get("pseudo_corpus"))
+    if args.dataset_type == "mp_docvqa":
+        base_dataset = MPDocVQADataset(dataset_root, split=split)
+    elif args.dataset_type == "infovqa":
+        base_dataset = InfoVQADataset(dataset_root, split=split)
+    else:
+        base_dataset = TextVQADataset(dataset_root, split=split)
 
     dataset = R3Dataset(
         base_dataset,
-        vision_encoder,
         vision_tokens=cfg["model"].get("vision_tokens", 16),
         hidden_size=cfg["model"].get("hidden_size", 4096),
         apply_corruption=apply_corruption,
+        pseudo_corpus=pseudo_corpus,
+        image_corruptor=ImageCorruptor() if apply_corruption else None,
+        pseudo_text_corruptor=PseudoTextCorruptor() if apply_corruption else None,
     )
     if args.limit:
         dataset = Subset(dataset, list(range(min(args.limit, len(dataset)))))
@@ -130,10 +133,11 @@ def main() -> None:
         top_k=model_section.get("top_k", 3),
     )
     model = R3Model(model_cfg).to(args.device)
-    state = torch.load(args.checkpoint, map_location=args.device)
-    if "state_dict" in state:
-        state = state["state_dict"]
-    model.load_state_dict(state, strict=False)
+    if args.checkpoint:
+        state = torch.load(args.checkpoint, map_location=args.device)
+        if "state_dict" in state:
+            state = state["state_dict"]
+        model.load_state_dict(state, strict=False)
     model.eval()
 
     total_loss = 0.0
@@ -145,11 +149,47 @@ def main() -> None:
 
     with torch.no_grad():
         for batch in dataloader:
-            outputs = model(batch)  # 推理阶段仍沿用训练时的三路输入装配
-            total_loss += outputs["loss"].item()
+            device = next(model.parameters()).device
+            clean_split = batch["clean"]
+            corrupted_split = batch["corrupted"]
+            tokenizer = model.base_vlm.tokenizer
+            max_len = getattr(model.config, "max_seq_length", 1024)
+            from train_r3 import R3Trainer  # reuse tokenizer/vision utilities
+
+            trainer_stub = R3Trainer(
+                model=model,
+                args=None,
+                train_dataset=None,
+                data_collator=None,
+            )
+            clean_tokens, clean_pseudo = trainer_stub._tokenize_branch(tokenizer, clean_split, max_len, device)
+            corrupted_tokens, corrupted_pseudo = trainer_stub._tokenize_branch(tokenizer, corrupted_split, max_len, device)
+            clean_vision = trainer_stub._get_vision_embeddings(model, clean_split, device)
+            corrupted_vision = trainer_stub._get_vision_embeddings(model, corrupted_split, device)
+
+            clean_out = model(
+                input_ids=clean_tokens["input_ids"],
+                attention_mask=clean_tokens["attention_mask"],
+                pixel_values=clean_vision,
+                labels=clean_tokens["labels"],
+                pseudo_text=clean_pseudo,
+                is_clean_branch=True,
+            )
+            student_out = model(
+                input_ids=corrupted_tokens["input_ids"],
+                attention_mask=corrupted_tokens["attention_mask"],
+                pixel_values=corrupted_vision,
+                labels=corrupted_tokens["labels"],
+                pseudo_text=corrupted_pseudo,
+                is_clean_branch=False,
+            )
+
+            loss = student_out["loss"] if student_out.get("loss") is not None else torch.tensor(0.0, device=device)
+            total_loss += loss.item()
             total_batches += 1
-            predictions = decode_predictions(outputs["corrupted_logits"], outputs["corrupted_labels"], model.base_vlm.tokenizer)
-            targets = batch["corrupted"]["labels"]
+
+            predictions = decode_predictions(student_out["logits"], corrupted_tokens["labels"], tokenizer)
+            targets = corrupted_split["labels"]
             for sample_id, pred, target in zip(batch["ids"], predictions, targets):
                 total += 1
                 if normalize_text(pred) == normalize_text(target):
@@ -181,3 +221,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# python evaluate_r3.py --config configs/default.yaml --dataset_type mp_docvqa \
+#   --checkpoint path/to/ckpt.pt \
+#   --apply_corruption \
+#   --predictions preds.jsonl
+

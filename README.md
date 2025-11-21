@@ -62,6 +62,7 @@ Curriculum: epochs 0–1 use low dropout + no consistency; epoch ≥2 uses highe
 - `train_r3.py` — dataset wrapper, collate, `R3Trainer`, curriculum scheduler.
 - `build_pseudo_text.py` — offline pseudo-text generation (OCR + caption optional).
 - `data_pipeline/` — dataset loaders, pseudo-text utilities, and `corruptions.py` for pre-encoding modality drops.
+- `DOCS.md` — concise pipeline walkthrough.
 
 ---
 

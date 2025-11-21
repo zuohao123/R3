@@ -12,6 +12,8 @@ from PIL import Image
 from transformers import AutoModelForVision2Seq, AutoProcessor
 
 from data_pipeline.datasets.textvqa import TextVQADataset
+from data_pipeline.datasets.mp_docvqa import MPDocVQADataset
+from data_pipeline.datasets.infovqa import InfoVQADataset
 from data_pipeline.pseudo_text import save_corpus
 from r3.retrieval_module import PseudoTextBuilder
 
@@ -70,6 +72,7 @@ def build_captions(model_name: str):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build pseudo-text corpus for PMC datasets.")
     parser.add_argument("--dataset_root", type=Path, required=True, help="Path to dataset directory.")
+    parser.add_argument("--dataset_type", type=str, default="textvqa", choices=["textvqa", "mp_docvqa", "infovqa"])
     parser.add_argument("--split", type=str, default="train")
     parser.add_argument("--output", type=Path, required=True, help="Destination JSONL file.")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap.")
@@ -81,7 +84,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    dataset = TextVQADataset(args.dataset_root, split=args.split)
+    root = args.dataset_root
+    if args.dataset_type == "mp_docvqa":
+        dataset = MPDocVQADataset(root, split=args.split)
+    elif args.dataset_type == "infovqa":
+        dataset = InfoVQADataset(root, split=args.split)
+    else:
+        dataset = TextVQADataset(root, split=args.split)
     builder = PseudoTextBuilder(default_conf=args.default_conf)
     caption_fn = None
     if args.caption_model:

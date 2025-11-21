@@ -4,10 +4,17 @@ Pseudo-text guided adaptive retrieval for the R^3 architecture.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+try:
+    import faiss  # type: ignore
+except Exception:  # pragma: no cover
+    faiss = None
 
 
 @dataclass
@@ -15,6 +22,7 @@ class RetrievalModuleConfig:
     hidden_size: int = 4096
     top_k: int = 3
     enable: bool = True
+    cache_path: Optional[str] = None  # enable FAISS/vector store when set
 
 
 @dataclass
@@ -32,6 +40,7 @@ class PseudoTextBuilderConfig:
 class PseudoTextBuilder:
     """
     Normalizes OCR / caption / fallback text into retrieval-ready strings.
+    优先级：context_evidence（跨页/外部） > OCR > Caption > Fallback(Q/ID)
     """
 
     def __init__(self, config: PseudoTextBuilderConfig | None = None, fallback_caption_fn=None) -> None:
@@ -41,6 +50,11 @@ class PseudoTextBuilder:
     def build(self, sample: Dict) -> List[str]:
         extra = sample.get("extra", {}) or {}
         entries: List[str] = []
+        # Context evidence (highest priority for Page-as-Evidence)
+        if self.config.include_context:
+            for ctx in extra.get("context_evidence", []) or []:
+                if ctx:
+                    entries.append(str(ctx))
         # OCR tokens
         if self.config.include_ocr:
             for token in extra.get("ocr_tokens", []) or []:
@@ -76,6 +90,12 @@ class PseudoTextBuilder:
 class PseudoTextRetrievalModule(nn.Module):
     """
     Lightweight retrieval built on pseudo-text tokens.
+    支持两种来源：
+      1) 批内伪文本（默认）
+      2) ingest_corpus 预载的外部伪文本库（build_pseudo_text 生成的 JSONL）
+    支持两种后端：
+      - 内存 hashing + 余弦
+      - 可选 FAISS（cache_path 且安装 faiss 时）
     """
 
     def __init__(self, config: RetrievalModuleConfig, embedding_layer: nn.Embedding) -> None:
@@ -85,6 +105,13 @@ class PseudoTextRetrievalModule(nn.Module):
         self.query_proj = nn.Linear(config.hidden_size, config.hidden_size)
         self.evidence_proj = nn.Linear(config.hidden_size, config.hidden_size)
         self.scorer = nn.Linear(config.hidden_size, 1)
+        self.use_faiss = bool(config.cache_path and faiss is not None)
+        self.index = None
+        if self.use_faiss:
+            self._init_faiss_index(config.hidden_size)
+        self._faiss_ids: List[str] = []
+        self.external_embeddings: Optional[torch.Tensor] = None
+        self.external_texts: Optional[List[str]] = None
 
     def forward(
         self,
@@ -102,9 +129,18 @@ class PseudoTextRetrievalModule(nn.Module):
             }
 
         query = self._build_query(question_embeddings, txt_conf)  # (b, d)
-        evidence_embeddings, evidence_texts = self._encode_evidence(pseudo_text, question_embeddings.device)
-        scores = self._score(query, evidence_embeddings, img_conf, txt_conf)
-        topk_embeddings, topk_texts, topk_scores = self._select_topk(evidence_embeddings, evidence_texts, scores)
+        if self.external_embeddings is not None and self.external_texts is not None:
+            # Use external corpus built from build_pseudo_text.py outputs
+            evidence_embeddings = self.external_embeddings.to(question_embeddings.device)
+            evidence_texts = [self.external_texts for _ in range(question_embeddings.size(0))]
+        else:
+            evidence_embeddings, evidence_texts = self._encode_evidence(pseudo_text, question_embeddings.device)
+
+        if self.use_faiss and self.index is not None:
+            topk_embeddings, topk_texts, topk_scores = self._faiss_search(evidence_embeddings, evidence_texts, query)
+        else:
+            scores = self._score(query, evidence_embeddings, img_conf, txt_conf)
+            topk_embeddings, topk_texts, topk_scores = self._select_topk(evidence_embeddings, evidence_texts, scores)
         return {
             "texts": topk_texts,
             "embeddings": topk_embeddings,
@@ -151,6 +187,39 @@ class PseudoTextRetrievalModule(nn.Module):
         stacked = torch.stack(padded)  # (b, evidences, d)
         return stacked.unsqueeze(2), texts  # reshape to (b, evidences, 1, d) for downstream
 
+    def _faiss_search(
+        self,
+        embeddings: torch.Tensor,
+        texts: List[List[str]],
+        query: torch.Tensor,
+    ) -> Tuple[torch.Tensor, List[List[str]], torch.Tensor]:
+        """
+        Build/update a FAISS index for evidence and retrieve top-k per query.
+        This is a lightweight adapter; for large corpora use an offline index.
+        """
+        bsz, evidences, _, dim = embeddings.shape
+        batch_embeddings = []
+        batch_texts: List[List[str]] = []
+        batch_scores = []
+        for b in range(bsz):
+            flat = F.normalize(embeddings[b].squeeze(1), dim=-1).detach().cpu().contiguous()
+            index = faiss.IndexFlatIP(dim)
+            index.add(flat.numpy())
+            query_cpu = F.normalize(query[b:b+1], dim=-1).detach().cpu().numpy()
+            scores, idx = index.search(query_cpu, min(self.config.top_k, evidences))
+            sel = idx[0]
+            emb = embeddings[b, sel]
+            batch_embeddings.append(emb)
+            batch_texts.append([texts[b][i] if i < len(texts[b]) else "" for i in sel])
+            batch_scores.append(torch.tensor(scores[0], device=embeddings.device))
+        return torch.stack(batch_embeddings), batch_texts, torch.stack(batch_scores)
+
+    def _init_faiss_index(self, dim: int) -> None:
+        if faiss is None:
+            self.use_faiss = False
+            return
+        self.index = faiss.IndexFlatIP(dim)
+
     def _score(
         self,
         query: torch.Tensor,
@@ -169,6 +238,41 @@ class PseudoTextRetrievalModule(nn.Module):
         noise_gate = 1.0 + visual_uncertainty  # boost when vision is unreliable
         attenuation = 1.0 - 0.5 * text_uncertainty  # but do not over-trust noisy text
         return logits * noise_gate * attenuation
+
+    def ingest_corpus(self, corpus_path: Optional[str]) -> None:
+        """
+        Load an external pseudo-text corpus (JSONL with `pseudo_text` field) and
+        pre-embed for retrieval. Intended to consume build_pseudo_text.py outputs.
+        加载后 forward 将优先使用外部库，覆盖批内伪文本。
+        """
+        if not corpus_path:
+            return
+        path = Path(corpus_path)
+        if not path.exists():
+            return
+        texts: List[str] = []
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    import json
+                    obj = json.loads(line)
+                    texts.extend(obj.get("pseudo_text", []))
+                except Exception:
+                    continue
+        unique_texts = [t for t in texts if t]
+        if not unique_texts:
+            return
+        device = next(self.embedding_layer.parameters()).device
+        vectors = []
+        for text in unique_texts:
+            token = torch.tensor([hash(text) % self.embedding_layer.num_embeddings], device=device)
+            vec = self.embedding_layer(token).mean(dim=0)
+            vectors.append(vec)
+        self.external_embeddings = torch.stack(vectors).unsqueeze(0).unsqueeze(2)  # (1, evidences, 1, dim)
+        self.external_texts = unique_texts
 
     def _select_topk(
         self,

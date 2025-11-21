@@ -4,10 +4,11 @@ Selective reconstruction and reasoning modules for R^3.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 @dataclass
@@ -164,3 +165,32 @@ class SelectiveReconstruction(nn.Module):
             evidence_summary = evidence_embeddings.squeeze(2).mean(dim=1)
         tokens = self.imputation(text_embeddings, txt_conf, evidence_summary)
         return gates[:, 1].view(-1, 1, 1) * tokens
+
+
+class TriPathReasoner(nn.Module):
+    """
+    Lightweight Transformer encoder (2 layers, 8 heads) to refine fused tokens
+    after SelectiveReconstruction. Keeps dimensionality intact.
+    设计目的：在 Prefix/Memory/Imputation 融合后，再做一次上下文建模与抑噪。
+    """
+
+    def __init__(self, hidden_size: int, num_layers: int = 2, num_heads: int = 8, dropout: float = 0.1) -> None:
+        super().__init__()
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=num_heads,
+            dim_feedforward=hidden_size * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+
+    def forward(self, inputs_embeds: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        # Build key padding mask: True for pads
+        key_padding = None
+        if attention_mask is not None:
+            key_padding = attention_mask == 0
+        refined = self.encoder(inputs_embeds, src_key_padding_mask=key_padding)
+        return self.layer_norm(refined)

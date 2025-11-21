@@ -143,7 +143,16 @@ class BaseVLM(torch.nn.Module):
         return Image.open(str(img)).convert("RGB")
 
     def _apply_lora(self, model):
-        lora_targets = ["q_proj", "k_proj", "v_proj", "o_proj", "vision_proj"]
+        lora_targets = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "vision_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
         lora_config = LoraConfig(
             r=self.config.lora_rank,
             lora_alpha=self.config.lora_alpha,
