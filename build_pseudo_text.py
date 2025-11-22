@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True, help="Destination JSONL file.")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap.")
     parser.add_argument("--enable_ocr", action="store_true", help="Run pytesseract OCR when samples lack tokens.")
-    parser.add_argument("--caption_model", type=str, default=None, help="Optional vision-language caption model.")
+    parser.add_argument("--caption_model", type=str, default="Qwen/Qwen3-VL-8B-Instruct", help="Optional vision-language caption model.")
     parser.add_argument("--default_conf", type=float, default=0.75)
     return parser.parse_args()
 
