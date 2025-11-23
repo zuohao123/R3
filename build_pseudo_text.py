@@ -18,7 +18,7 @@ from data_pipeline.datasets.chartqa import ChartQADataset
 from data_pipeline.datasets.docvqa import DocVQADataset
 from data_pipeline.datasets.slidevqa import SlideVQADataset
 from data_pipeline.pseudo_text import save_corpus
-from r3.retrieval_module import PseudoTextBuilder
+from r3.retrieval_module import PseudoTextBuilder, PseudoTextBuilderConfig
 
 try:
     import pytesseract
@@ -219,7 +219,8 @@ def main() -> None:
     if not dataset_roots:
         raise ValueError("Must specify either --dataset_root or --dataset_roots")
     
-    builder = PseudoTextBuilder(default_conf=args.default_conf)
+    config = PseudoTextBuilderConfig(default_conf=args.default_conf)
+    builder = PseudoTextBuilder(config=config)
     caption_fn = None
     if args.caption_model:
         caption_fn = build_captions(args.caption_model)
