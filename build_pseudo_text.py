@@ -57,17 +57,54 @@ def run_ocr(image_path: str) -> List[Dict]:
 
 def build_captions(model_name: str):
     # 通过任意开源视觉语言模型补充描述型 caption，提升语料覆盖度
-    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForVision2Seq.from_pretrained(model_name, trust_remote_code=True)
-    model.eval()
+    try:
+        # 尝试使用指定的模型
+        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModelForVision2Seq.from_pretrained(model_name, trust_remote_code=True)
+        model.eval()
+        print(f"成功加载模型: {model_name}")
+    except Exception as e:
+        print(f"警告: 无法加载模型 {model_name}: {e}")
+        print("尝试使用备用模型...")
+        
+        # 备用模型列表
+        fallback_models = [
+            "Qwen/Qwen2-VL-2B-Instruct",
+            "microsoft/git-base-coco",
+            "nlpconnect/vit-gpt2-image-captioning"
+        ]
+        
+        processor = None
+        model = None
+        
+        for fallback_model in fallback_models:
+            try:
+                processor = AutoProcessor.from_pretrained(fallback_model, trust_remote_code=True)
+                model = AutoModelForVision2Seq.from_pretrained(fallback_model, trust_remote_code=True)
+                model.eval()
+                print(f"成功加载备用模型: {fallback_model}")
+                break
+            except Exception as fallback_e:
+                print(f"备用模型 {fallback_model} 也失败: {fallback_e}")
+                continue
+        
+        if processor is None or model is None:
+            print("警告: 所有模型都无法加载，将跳过图像描述生成")
+            return None
 
     def infer(image_path: str) -> Optional[str]:
-        image = Image.open(image_path).convert("RGB")
-        inputs = processor(images=image, return_tensors="pt")
-        with torch.no_grad():
-            generated = model.generate(**inputs, max_new_tokens=64)
-        text = processor.batch_decode(generated, skip_special_tokens=True)[0]
-        return text.strip()
+        if not processor or not model:
+            return None
+        try:
+            image = Image.open(image_path).convert("RGB")
+            inputs = processor(images=image, return_tensors="pt")
+            with torch.no_grad():
+                generated = model.generate(**inputs, max_new_tokens=64)
+            text = processor.batch_decode(generated, skip_special_tokens=True)[0]
+            return text.strip()
+        except Exception as e:
+            print(f"图像描述生成失败 {image_path}: {e}")
+            return None
 
     return infer
 
@@ -182,6 +219,7 @@ def process_single_dataset(root: Path, dataset_type: str, split: str, builder: P
                         extra.setdefault("captions", []).append(caption)
                 except Exception as e:
                     print(f"Warning: Caption generation failed for {sample['id']}: {e}")
+            # Note: args is not available in this function scope, so we skip this check
             
             # Build pseudo-text entries
             entries = builder.build(sample)
@@ -223,7 +261,12 @@ def main() -> None:
     builder = PseudoTextBuilder(config=config)
     caption_fn = None
     if args.caption_model:
-        caption_fn = build_captions(args.caption_model)
+        try:
+            caption_fn = build_captions(args.caption_model)
+        except Exception as e:
+            print(f"警告: 图像描述模型初始化失败: {e}")
+            print("将跳过图像描述生成，仅使用OCR和现有标注")
+            caption_fn = None
     
     all_artifacts = []
     
