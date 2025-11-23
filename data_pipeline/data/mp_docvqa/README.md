@@ -39,23 +39,34 @@ mp_docvqa/
    unzip documents.zip -d images/
    ```
 
+**重要**: 图像文件命名应与 `page_ids` 字段对应，例如：
+- `page_ids: ["xnbl0037_p0", "xnbl0037_p1"]`
+- 对应图像文件: `xnbl0037_p0.png`, `xnbl0037_p1.png`
+
 ## 标注文件格式
 
 ```json
 [
   {
-    "id": "doc1_page0",
-    "doc_id": "doc1",
-    "page": 0,
-    "question": "What is the title of this document?",
-    "answer": "Annual Report 2023",
-    "image": "doc1_page0.png",
-    "ocr_tokens": [...],      // 可选，OCR 标注
-    "captions": [...],        // 可选，页面描述
-    "context_evidence": [...]  // 可选，跨页上下文
+    "questionId": 337,
+    "question": "what is the date mentioned in this letter?",
+    "doc_id": "xnbl0037",
+    "page_ids": ["xnbl0037_p0", "xnbl0037_p1"],
+    "answers": ["1/8/93"],
+    "answer_page_idx": 0,
+    "data_split": "train"
   }
 ]
 ```
+
+**字段说明：**
+- `questionId`: 问题的唯一标识符
+- `question`: 问题文本
+- `doc_id`: 文档ID
+- `page_ids`: 相关页面ID列表（多页文档）
+- `answers`: 答案列表
+- `answer_page_idx`: 答案所在页面的索引
+- `data_split`: 数据分割（train/val/test）
 
 ## 特殊功能
 
