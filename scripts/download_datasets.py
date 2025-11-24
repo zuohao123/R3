@@ -7,6 +7,9 @@ already-downloaded archives/directories into the expected layout.
 from __future__ import annotations
 
 import argparse
+import io
+import json
+import shutil
 import tarfile
 import zipfile
 from pathlib import Path
@@ -16,6 +19,16 @@ try:
     from huggingface_hub import snapshot_download
 except ImportError:  # pragma: no cover
     snapshot_download = None
+
+try:
+    from datasets import load_dataset  # type: ignore
+except Exception:  # pragma: no cover
+    load_dataset = None
+
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover
+    Image = None
 
 
 DATASETS: Dict[str, Dict] = {
@@ -57,6 +70,29 @@ DATASETS: Dict[str, Dict] = {
         "target_images": "images",
         "target_videos": "videos",
     },
+    # HuggingFace-native ingestion (parquet) for InfoVQA/MTVQA
+    "infovqa_hf": {
+        "hf_repo": "WinKawaks/InfoVQA",
+        "hf_split_map": {"train": ["train"], "val": ["validation", "val"], "test": ["test"]},
+        "hf_id_col": ["question_id", "id", "image_id"],
+        "hf_question_col": ["question", "query"],
+        "hf_answer_col": ["answer", "answers"],
+        "hf_image_col": ["image", "image_path", "image_id"],
+        "target_images": "images",
+        "canonical": "infovqa",
+    },
+    "mtvqa_hf": {
+        "hf_repo": "ByteDance/MTVQA",
+        "hf_split_map": {"train": ["train"], "val": ["validation", "val"], "test": ["test"]},
+        "hf_id_col": ["id", "question_id"],
+        "hf_question_col": ["question"],
+        "hf_answer_col": ["answer", "answers"],
+        "hf_image_col": ["image", "image_path"],
+        "hf_video_col": ["video", "video_path"],
+        "target_images": "images",
+        "target_videos": "videos",
+        "canonical": "mtvqa",
+    },
 }
 
 
@@ -68,6 +104,20 @@ def parse_kv_pairs(pairs: Optional[List[str]]) -> Dict[str, str]:
         key, val = item.split("=", 1)
         out[key.strip()] = val.strip()
     return out
+
+
+def sanitize_id(raw_id: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(raw_id))
+
+
+def first_non_null(sample: Dict, keys: List[str], default=None):
+    for k in keys:
+        if k in sample and sample[k] not in (None, ""):
+            v = sample[k]
+            if isinstance(v, list):
+                return v[0] if v else default
+            return v
+    return default
 
 
 def find_first(root: Path, candidates: Iterable[str]) -> Optional[Path]:
@@ -115,6 +165,55 @@ def discover_archive(source_root: Path, extensions: Tuple[str, ...]) -> Optional
         matches = list(source_root.rglob(f"*{ext}"))
         if matches:
             return matches[0]
+    return None
+
+
+def save_image_like(obj, out_dir: Path, basename: str) -> Optional[str]:
+    """
+    Persist an image (PIL / bytes / local path / datasets Image dict) to out_dir.
+    Returns relative filename or None.
+    """
+    if Image is None:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = sanitize_id(basename) or "sample"
+    candidate_names = [
+        f"{base}.png",
+        f"{base}.jpg",
+    ]
+    # datasets Image feature may provide dict with 'bytes' or 'array'
+    if isinstance(obj, dict):
+        if "path" in obj and obj["path"]:
+            obj = obj["path"]
+        elif "bytes" in obj and obj["bytes"]:
+            obj = Image.open(io.BytesIO(obj["bytes"])).convert("RGB")
+        elif "array" in obj:
+            arr = obj["array"]
+            try:
+                img = Image.fromarray(arr).convert("RGB")
+                obj = img
+            except Exception:
+                pass
+    if isinstance(obj, str):
+        src = Path(obj)
+        if src.exists():
+            ext = src.suffix.lower() or ".png"
+            dest = out_dir / f"{base}{ext}"
+            shutil.copyfile(src, dest)
+            return dest.name
+        return None
+    if isinstance(obj, Image.Image):
+        dest = out_dir / candidate_names[0]
+        obj.save(dest)
+        return dest.name
+    if isinstance(obj, bytes):
+        try:
+            img = Image.open(io.BytesIO(obj)).convert("RGB")
+            dest = out_dir / candidate_names[0]
+            img.save(dest)
+            return dest.name
+        except Exception:
+            return None
     return None
 
 
@@ -198,6 +297,60 @@ def stage_modalities(
     print(f"  ! No {target_name} found (searched for dirs {dir_candidates} or archives {archive_candidates})")
 
 
+def ingest_hf_dataset(
+    name: str,
+    cfg: Dict,
+    target_root: Path,
+    hf_repo: str,
+    hf_token: Optional[str],
+    hf_cache: Optional[Path],
+) -> None:
+    if load_dataset is None:
+        raise ImportError("datasets 库未安装，无法直接读取 HuggingFace 数据集")
+    ds_dict = load_dataset(hf_repo, cache_dir=hf_cache, token=hf_token)
+    split_map: Dict[str, List[str]] = cfg.get("hf_split_map", {})
+    target_root.mkdir(parents=True, exist_ok=True)
+    for split, aliases in split_map.items():
+        hf_split = next((alias for alias in aliases if alias in ds_dict), None)
+        if hf_split is None:
+            print(f"  ! Split {split} not found in {hf_repo} (checked {aliases})")
+            continue
+        ds = ds_dict[hf_split]
+        records = []
+        images_dir = target_root / cfg.get("target_images", "images")
+        videos_dir = target_root / cfg.get("target_videos", "videos") if cfg.get("target_videos") else None
+        for idx, sample in enumerate(ds):
+            sid = first_non_null(sample, cfg.get("hf_id_col", []), f"{split}_{idx}")
+            q = first_non_null(sample, cfg.get("hf_question_col", []), "")
+            ans = first_non_null(sample, cfg.get("hf_answer_col", []), "")
+            if isinstance(ans, list):
+                ans = ans[0] if ans else ""
+            img_obj = first_non_null(sample, cfg.get("hf_image_col", [])) if cfg.get("hf_image_col") else None
+            img_rel = save_image_like(img_obj, images_dir, sid) if img_obj is not None else None
+            vid_obj = first_non_null(sample, cfg.get("hf_video_col", [])) if cfg.get("hf_video_col") else None
+            vid_rel = None
+            if vid_obj and videos_dir:
+                if isinstance(vid_obj, str) and Path(vid_obj).exists():
+                    videos_dir.mkdir(parents=True, exist_ok=True)
+                    ext = Path(vid_obj).suffix or ".mp4"
+                    dest = videos_dir / f"{sanitize_id(str(sid))}{ext}"
+                    shutil.copyfile(vid_obj, dest)
+                    vid_rel = f"{videos_dir.name}/{dest.name}"
+            record = {"id": str(sid), "question": q, "answer": ans}
+            if img_rel:
+                record["image"] = f"{images_dir.name}/{img_rel}"
+            if vid_rel:
+                record["video"] = vid_rel
+            for field in ("ocr_tokens", "captions", "context_evidence"):
+                if field in sample:
+                    record[field] = sample[field]
+            records.append(record)
+        out_path = target_root / f"{name}_{split}.json"
+        with out_path.open("w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False)
+        print(f"  ✓ Saved {len(records)} samples -> {out_path}")
+
+
 def download_repo(repo_id: str, token: Optional[str], cache_dir: Optional[Path]) -> Path:
     if snapshot_download is None:
         raise ImportError("huggingface_hub is required to download datasets.")
@@ -217,6 +370,21 @@ def stage_dataset(
     overwrite: bool,
 ) -> None:
     target_root.mkdir(parents=True, exist_ok=True)
+    # HuggingFace-native ingestion (parquet → json + images)
+    if cfg.get("hf_repo"):
+        if load_dataset is None:
+            raise ImportError("请先安装 datasets 库: pip install datasets")
+        print(f"[{name}] Loading HuggingFace dataset {cfg['hf_repo']} ...")
+        ingest_hf_dataset(
+            name=cfg.get("canonical", name),
+            cfg=cfg,
+            target_root=target_root,
+            hf_repo=cfg["hf_repo"],
+            hf_token=hf_token,
+            hf_cache=hf_cache,
+        )
+        return
+
     source_hint = local_sources.get(name)
     source_root: Optional[Path] = Path(source_hint) if source_hint else None
     if source_root and not source_root.exists():
@@ -265,7 +433,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--datasets",
         nargs="+",
-        default=["infovqa", "mp_docvqa", "mtvqa"],
+        default=["infovqa_hf", "mp_docvqa", "mtvqa_hf"],
         choices=list(DATASETS.keys()),
         help="Datasets to download/stage.",
     )
@@ -291,7 +459,7 @@ def main() -> None:
             stage_dataset(
                 name=name,
                 cfg=cfg,
-                target_root=args.output_root / name,
+                target_root=args.output_root / (cfg.get("canonical", name)),
                 repo_id=repo_id,
                 local_sources=local_sources,
                 hf_token=args.hf_token,

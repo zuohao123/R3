@@ -7,3 +7,4 @@ transformers @ git+https://github.com/huggingface/transformers.git
 peft>=0.6.0  # Updated version number
 accelerate>=0.20.0  # Added missing package
 scikit-learn>=1.3.0  # Added missing package
+datasets>=2.16.0  # HF dataset ingestion for parquet pipelines
