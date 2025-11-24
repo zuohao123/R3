@@ -77,6 +77,7 @@ def build_captions(
     token: Optional[str] = None,
     local_files_only: bool = False,
     provider: str = "modelscope",
+    ignore_mismatched_sizes: bool = True,
 ):
     # 通过任意开源视觉语言模型补充描述型 caption，提升语料覆盖度
     try:
@@ -106,6 +107,7 @@ def build_captions(
                 cache_dir=cache_dir,
                 token=token,
                 local_files_only=local_files_only,
+                ignore_mismatched_sizes=ignore_mismatched_sizes,
             )
             processor = AutoProcessor.from_pretrained(
                 model_path,
@@ -183,6 +185,7 @@ def build_captions(
                 cache_dir=cache_dir,
                 token=token,
                 local_files_only=local_files_only,
+                ignore_mismatched_sizes=ignore_mismatched_sizes,
             )
             model.eval()
             print(f"成功加载模型: {model_name}")
@@ -295,9 +298,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--provider",
         type=str,
-        default="modelscope",
+        default="huggingface",
         choices=["modelscope", "huggingface"],
         help="Download provider for caption model.",
+    )
+    parser.add_argument(
+        "--ignore_mismatched_sizes",
+        action="store_true",
+        help="Pass ignore_mismatched_sizes=True when loading caption model (helps Qwen3 checkpoints).",
     )
     return parser.parse_args()
 
@@ -396,6 +404,7 @@ def main() -> None:
                 token=args.hf_token,
                 local_files_only=args.local_files_only,
                 provider=args.provider,
+                ignore_mismatched_sizes=args.ignore_mismatched_sizes or True,
             )
         except Exception as e:
             print(f"警告: 图像描述模型初始化失败: {e}")
@@ -453,3 +462,16 @@ if __name__ == "__main__":
 #   --split train \
 #   --output ./artifacts/pseudo_text_custom_train.jsonl \
 #   --enable_ocr
+
+
+# python build_pseudo_text.py \
+#   --dataset_root data_pipeline/data/infovqa \
+#   --dataset_type infovqa \
+#   --split train \
+#   --output artifacts/infovqa_pseudo_text_train.jsonl \
+#   --enable_ocr \
+#   --caption_model Qwen/Qwen3-VL-8B-Instruct \
+#   --provider huggingface \
+#   --model_cache_dir ./hf_cache \
+#   --local_files_only \
+#   --ignore_mismatched_sizes
