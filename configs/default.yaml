@@ -1,5 +1,5 @@
 dataset:
-  root: ./data_pipeline/data/textvqa
+  root: ./data_pipeline/data/mp_docvqa
   split: train
   eval_split: val
   batch_size: 2
@@ -11,7 +11,7 @@ model:
   lora_alpha: 16
   hidden_size: 4096
   provider: modelscope  # 可切换为 modelscope huggingface
-  token: null            # 私有模型可填 HF token 或魔搭 token
+  token: ms-0d4f55e3-62c7-4e90-832e-9f864f802305            # 私有模型可填 HF token 或魔搭 token
   cache_dir: ./hf_cache
   revision: null
   local_files_only: false

@@ -58,11 +58,105 @@ def run_ocr(image_path: str) -> List[Dict]:
 def build_captions(model_name: str):
     # 通过任意开源视觉语言模型补充描述型 caption，提升语料覆盖度
     try:
-        # 尝试使用指定的模型
-        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-        model = AutoModelForVision2Seq.from_pretrained(model_name, trust_remote_code=True)
-        model.eval()
-        print(f"成功加载模型: {model_name}")
+        # 针对 Qwen-VL 模型的特殊处理
+        if "Qwen" in model_name and "VL" in model_name:
+            print(f"正在加载 Qwen-VL 模型: {model_name}")
+            
+            # 安装必要的依赖
+            try:
+                import torchvision
+            except ImportError:
+                print("警告: torchvision 未安装，正在尝试安装...")
+                import subprocess
+                subprocess.check_call(["pip", "install", "torchvision"])
+                import torchvision
+            
+            # 使用特定的配置加载 Qwen-VL
+            from transformers import Qwen2VLForConditionalGeneration, AutoTokenizer, AutoProcessor
+            
+            # 加载模型和处理器
+            model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_name, 
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+                trust_remote_code=True
+            )
+            processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+            
+            print(f"成功加载 Qwen-VL 模型: {model_name}")
+            
+            def qwen_infer(image_path: str) -> Optional[str]:
+                try:
+                    from PIL import Image
+                    image = Image.open(image_path).convert("RGB")
+                    
+                    # Qwen-VL 的特殊输入格式
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "image": image,
+                                },
+                                {"type": "text", "text": "Describe this image briefly."},
+                            ],
+                        }
+                    ]
+                    
+                    # 准备输入
+                    text = processor.apply_chat_template(
+                        messages, tokenize=False, add_generation_prompt=True
+                    )
+                    image_inputs, video_inputs = processor.process_vision_info(messages)
+                    inputs = processor(
+                        text=[text],
+                        images=image_inputs,
+                        videos=video_inputs,
+                        padding=True,
+                        return_tensors="pt",
+                    )
+                    inputs = inputs.to("cuda" if torch.cuda.is_available() else "cpu")
+                    
+                    # 生成描述
+                    with torch.no_grad():
+                        generated_ids = model.generate(**inputs, max_new_tokens=64)
+                    generated_ids_trimmed = [
+                        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                    ]
+                    output_text = processor.batch_decode(
+                        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                    )
+                    
+                    return output_text[0].strip() if output_text else None
+                    
+                except Exception as e:
+                    print(f"Qwen-VL 图像描述生成失败 {image_path}: {e}")
+                    return None
+            
+            return qwen_infer
+        
+        else:
+            # 其他模型的通用处理
+            processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+            model = AutoModelForVision2Seq.from_pretrained(model_name, trust_remote_code=True)
+            model.eval()
+            print(f"成功加载模型: {model_name}")
+            
+            def general_infer(image_path: str) -> Optional[str]:
+                try:
+                    image = Image.open(image_path).convert("RGB")
+                    inputs = processor(images=image, return_tensors="pt")
+                    with torch.no_grad():
+                        generated = model.generate(**inputs, max_new_tokens=64)
+                    text = processor.batch_decode(generated, skip_special_tokens=True)[0]
+                    return text.strip()
+                except Exception as e:
+                    print(f"图像描述生成失败 {image_path}: {e}")
+                    return None
+            
+            return general_infer
+            
     except Exception as e:
         print(f"警告: 无法加载模型 {model_name}: {e}")
         print("尝试使用备用模型...")
@@ -74,39 +168,37 @@ def build_captions(model_name: str):
             "nlpconnect/vit-gpt2-image-captioning"
         ]
         
-        processor = None
-        model = None
-        
         for fallback_model in fallback_models:
             try:
-                processor = AutoProcessor.from_pretrained(fallback_model, trust_remote_code=True)
-                model = AutoModelForVision2Seq.from_pretrained(fallback_model, trust_remote_code=True)
-                model.eval()
-                print(f"成功加载备用模型: {fallback_model}")
-                break
+                if "Qwen" in fallback_model:
+                    # 递归调用处理 Qwen 模型
+                    return build_captions(fallback_model)
+                else:
+                    processor = AutoProcessor.from_pretrained(fallback_model, trust_remote_code=True)
+                    model = AutoModelForVision2Seq.from_pretrained(fallback_model, trust_remote_code=True)
+                    model.eval()
+                    print(f"成功加载备用模型: {fallback_model}")
+                    
+                    def fallback_infer(image_path: str) -> Optional[str]:
+                        try:
+                            image = Image.open(image_path).convert("RGB")
+                            inputs = processor(images=image, return_tensors="pt")
+                            with torch.no_grad():
+                                generated = model.generate(**inputs, max_new_tokens=64)
+                            text = processor.batch_decode(generated, skip_special_tokens=True)[0]
+                            return text.strip()
+                        except Exception as e:
+                            print(f"图像描述生成失败 {image_path}: {e}")
+                            return None
+                    
+                    return fallback_infer
+                    
             except Exception as fallback_e:
                 print(f"备用模型 {fallback_model} 也失败: {fallback_e}")
                 continue
         
-        if processor is None or model is None:
-            print("警告: 所有模型都无法加载，将跳过图像描述生成")
-            return None
-
-    def infer(image_path: str) -> Optional[str]:
-        if not processor or not model:
-            return None
-        try:
-            image = Image.open(image_path).convert("RGB")
-            inputs = processor(images=image, return_tensors="pt")
-            with torch.no_grad():
-                generated = model.generate(**inputs, max_new_tokens=64)
-            text = processor.batch_decode(generated, skip_special_tokens=True)[0]
-            return text.strip()
-        except Exception as e:
-            print(f"图像描述生成失败 {image_path}: {e}")
-            return None
-
-    return infer
+        print("警告: 所有模型都无法加载，将跳过图像描述生成")
+        return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -119,7 +211,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True, help="Destination JSONL file.")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap per dataset.")
     parser.add_argument("--enable_ocr", action="store_true", help="Run pytesseract OCR when samples lack tokens.")
-    parser.add_argument("--caption_model", type=str, default="Qwen/Qwen3-VL-8B-Instruct", help="Optional vision-language caption model.")
+    parser.add_argument("--caption_model", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Optional vision-language caption model.")
     parser.add_argument("--default_conf", type=float, default=0.75)
     return parser.parse_args()
 
