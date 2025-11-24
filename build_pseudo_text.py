@@ -50,7 +50,12 @@ def run_ocr(image_path: str) -> List[Dict]:
     return tokens
 
 
-def build_captions(model_name: str):
+def build_captions(
+    model_name: str,
+    cache_dir: Optional[Path] = None,
+    token: Optional[str] = None,
+    local_files_only: bool = False,
+):
     # 通过任意开源视觉语言模型补充描述型 caption，提升语料覆盖度
     try:
         # 针对 Qwen-VL 模型的特殊处理
@@ -71,12 +76,21 @@ def build_captions(model_name: str):
             
             # 加载模型和处理器
             model = Qwen2VLForConditionalGeneration.from_pretrained(
-                model_name, 
+                model_name,
                 torch_dtype=torch.bfloat16,
                 device_map="auto",
-                trust_remote_code=True
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+                token=token,
+                local_files_only=local_files_only,
             )
-            processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+            processor = AutoProcessor.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+                token=token,
+                local_files_only=local_files_only,
+            )
             
             print(f"成功加载 Qwen-VL 模型: {model_name}")
             
@@ -130,11 +144,23 @@ def build_captions(model_name: str):
                     return None
             
             return qwen_infer
-        
+
         else:
             # 其他模型的通用处理
-            processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-            model = AutoModelForVision2Seq.from_pretrained(model_name, trust_remote_code=True)
+            processor = AutoProcessor.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+                token=token,
+                local_files_only=local_files_only,
+            )
+            model = AutoModelForVision2Seq.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+                token=token,
+                local_files_only=local_files_only,
+            )
             model.eval()
             print(f"成功加载模型: {model_name}")
             
@@ -151,7 +177,7 @@ def build_captions(model_name: str):
                     return None
             
             return general_infer
-            
+
     except Exception as e:
         print(f"警告: 无法加载模型 {model_name}: {e}")
         print("尝试使用备用模型...")
@@ -167,10 +193,27 @@ def build_captions(model_name: str):
             try:
                 if "Qwen" in fallback_model:
                     # 递归调用处理 Qwen 模型
-                    return build_captions(fallback_model)
+                    return build_captions(
+                        fallback_model,
+                        cache_dir=cache_dir,
+                        token=token,
+                        local_files_only=local_files_only,
+                    )
                 else:
-                    processor = AutoProcessor.from_pretrained(fallback_model, trust_remote_code=True)
-                    model = AutoModelForVision2Seq.from_pretrained(fallback_model, trust_remote_code=True)
+                    processor = AutoProcessor.from_pretrained(
+                        fallback_model,
+                        trust_remote_code=True,
+                        cache_dir=cache_dir,
+                        token=token,
+                        local_files_only=local_files_only,
+                    )
+                    model = AutoModelForVision2Seq.from_pretrained(
+                        fallback_model,
+                        trust_remote_code=True,
+                        cache_dir=cache_dir,
+                        token=token,
+                        local_files_only=local_files_only,
+                    )
                     model.eval()
                     print(f"成功加载备用模型: {fallback_model}")
                     
@@ -210,8 +253,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True, help="Destination JSONL file.")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap per dataset.")
     parser.add_argument("--enable_ocr", action="store_true", help="Run pytesseract OCR when samples lack tokens.")
-    parser.add_argument("--caption_model", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Optional vision-language caption model.")
+    parser.add_argument(
+        "--caption_model",
+        type=str,
+        default="Qwen/Qwen3-VL-8B-Instruct",
+        help="Optional vision-language caption model.",
+    )
     parser.add_argument("--default_conf", type=float, default=0.75)
+    parser.add_argument(
+        "--model_cache_dir",
+        type=Path,
+        default=Path("./hf_cache"),
+        help="Directory to download/store caption/backbone models.",
+    )
+    parser.add_argument("--hf_token", type=str, default=None, help="Optional HF token for gated models.")
+    parser.add_argument("--local_files_only", action="store_true", help="Force using only local cached models.")
     return parser.parse_args()
 
 
@@ -303,7 +359,12 @@ def main() -> None:
     caption_fn = None
     if args.caption_model:
         try:
-            caption_fn = build_captions(args.caption_model)
+            caption_fn = build_captions(
+                args.caption_model,
+                cache_dir=args.model_cache_dir,
+                token=args.hf_token,
+                local_files_only=args.local_files_only,
+            )
         except Exception as e:
             print(f"警告: 图像描述模型初始化失败: {e}")
             print("将跳过图像描述生成，仅使用OCR和现有标注")
