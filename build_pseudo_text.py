@@ -82,12 +82,12 @@ def resolve_model_path(
     provider = provider.lower()
     if provider == "modelscope":
         try:
-            from modelscope import snapshot_download  # type: ignore
+            from modelscope import snapshot_download as ms_snapshot_download  # type: ignore
         except Exception as exc:  # pragma: no cover
             raise ImportError(
                 "provider=modelscope 但未安装 modelscope，请先 pip install modelscope。"
             ) from exc
-        local_dir = snapshot_download(
+        local_dir = ms_snapshot_download(
             model_id=model_name,
             cache_dir=str(cache_dir) if cache_dir else None,
             use_auth_token=token,
