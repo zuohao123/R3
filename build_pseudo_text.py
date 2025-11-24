@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 import torch
 from PIL import Image
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoConfig, AutoModelForVision2Seq, AutoProcessor
 
 from data_pipeline.datasets import DATASET_REGISTRY, create_dataset, detect_dataset_type
 from data_pipeline.pseudo_text import save_corpus
@@ -82,6 +82,24 @@ def build_captions(
     # 通过任意开源视觉语言模型补充描述型 caption，提升语料覆盖度
     try:
         model_path = resolve_model_path(model_name, cache_dir, provider, token)
+        # 显式检查 config.model_type，提示用户是否加载到了正确的 Qwen 版本
+        try:
+            cfg_obj = AutoConfig.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+                token=token,
+                local_files_only=local_files_only,
+            )
+            expected = "qwen3_vl" if "qwen3" in model_name.lower() else "qwen2_vl"
+            if getattr(cfg_obj, "model_type", None) != expected:
+                print(
+                    f"警告: 期望 {expected}，但实际 config.model_type={getattr(cfg_obj, 'model_type', None)}，"
+                    " 可能是缓存/transformers 版本导致加载了错误的模型类。"
+                )
+                print(f"  使用的权重路径: {model_path}")
+        except Exception as cfg_err:
+            print(f"提示: 读取 config 失败（可忽略）: {cfg_err}")
         # 针对 Qwen-VL 模型的特殊处理
         if "Qwen" in model_name and "VL" in model_name:
             print(f"正在加载 Qwen-VL 模型: {model_name}")
