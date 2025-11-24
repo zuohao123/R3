@@ -111,7 +111,6 @@ def resolve_model_path(
                 repo_type="model",
                 local_files_only=False,
                 allow_patterns=["*"],
-                trust_remote_code=True,
             )
             downloaded = _find_hf_cached_snapshot(model_name, Path(cache_dir))
             return downloaded or local_dir
