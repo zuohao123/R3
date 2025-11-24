@@ -50,14 +50,37 @@ def run_ocr(image_path: str) -> List[Dict]:
     return tokens
 
 
+def resolve_model_path(model_name: str, cache_dir: Optional[Path], provider: str, token: Optional[str]) -> str:
+    """
+    Resolve model weights location. If provider=modelscope, download via modelscope snapshot_download
+    so weights stay in本地缓存; otherwise fallback to Hugging Face.
+    """
+    if provider.lower() == "modelscope":
+        try:
+            from modelscope import snapshot_download  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise ImportError(
+                "provider=modelscope 但未安装 modelscope，请先 pip install modelscope。"
+            ) from exc
+        local_dir = snapshot_download(
+            model_id=model_name,
+            cache_dir=str(cache_dir) if cache_dir else None,
+            use_auth_token=token,
+        )
+        return local_dir
+    return model_name
+
+
 def build_captions(
     model_name: str,
     cache_dir: Optional[Path] = None,
     token: Optional[str] = None,
     local_files_only: bool = False,
+    provider: str = "modelscope",
 ):
     # 通过任意开源视觉语言模型补充描述型 caption，提升语料覆盖度
     try:
+        model_path = resolve_model_path(model_name, cache_dir, provider, token)
         # 针对 Qwen-VL 模型的特殊处理
         if "Qwen" in model_name and "VL" in model_name:
             print(f"正在加载 Qwen-VL 模型: {model_name}")
@@ -76,7 +99,7 @@ def build_captions(
             
             # 加载模型和处理器
             model = Qwen2VLForConditionalGeneration.from_pretrained(
-                model_name,
+                model_path,
                 torch_dtype=torch.bfloat16,
                 device_map="auto",
                 trust_remote_code=True,
@@ -85,7 +108,7 @@ def build_captions(
                 local_files_only=local_files_only,
             )
             processor = AutoProcessor.from_pretrained(
-                model_name,
+                model_path,
                 trust_remote_code=True,
                 cache_dir=cache_dir,
                 token=token,
@@ -148,14 +171,14 @@ def build_captions(
         else:
             # 其他模型的通用处理
             processor = AutoProcessor.from_pretrained(
-                model_name,
+                model_path,
                 trust_remote_code=True,
                 cache_dir=cache_dir,
                 token=token,
                 local_files_only=local_files_only,
             )
             model = AutoModelForVision2Seq.from_pretrained(
-                model_name,
+                model_path,
                 trust_remote_code=True,
                 cache_dir=cache_dir,
                 token=token,
@@ -198,6 +221,7 @@ def build_captions(
                         cache_dir=cache_dir,
                         token=token,
                         local_files_only=local_files_only,
+                        provider=provider,
                     )
                 else:
                     processor = AutoProcessor.from_pretrained(
@@ -266,8 +290,15 @@ def parse_args() -> argparse.Namespace:
         default=Path("./hf_cache"),
         help="Directory to download/store caption/backbone models.",
     )
-    parser.add_argument("--hf_token", type=str, default=None, help="Optional HF token for gated models.")
+    parser.add_argument("--hf_token", type=str, default=None, help="Optional token for gated models.")
     parser.add_argument("--local_files_only", action="store_true", help="Force using only local cached models.")
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="modelscope",
+        choices=["modelscope", "huggingface"],
+        help="Download provider for caption model.",
+    )
     return parser.parse_args()
 
 
@@ -364,6 +395,7 @@ def main() -> None:
                 cache_dir=args.model_cache_dir,
                 token=args.hf_token,
                 local_files_only=args.local_files_only,
+                provider=args.provider,
             )
         except Exception as e:
             print(f"警告: 图像描述模型初始化失败: {e}")

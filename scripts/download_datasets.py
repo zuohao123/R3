@@ -10,7 +10,7 @@ import argparse
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 try:
     from huggingface_hub import snapshot_download
@@ -78,6 +78,46 @@ def find_first(root: Path, candidates: Iterable[str]) -> Optional[Path]:
     return None
 
 
+def discover_annotation(source_root: Path, split: str) -> Optional[Path]:
+    """
+    Fallback: search any *.json that contains the split name (train/val/test) under root or root/data.
+    """
+    search_roots = [source_root, source_root / "data", source_root / "Data"]
+    for base in search_roots:
+        if not base.exists():
+            continue
+        for path in base.rglob("*.json"):
+            name_lower = path.name.lower()
+            if split in name_lower:
+                return path
+    return None
+
+
+def discover_media_dir(source_root: Path, extensions: Tuple[str, ...], min_count: int = 20) -> Optional[Path]:
+    """
+    Fallback: find the directory that contains the most files with given extensions.
+    """
+    counts: Dict[Path, int] = {}
+    for ext in extensions:
+        for file in source_root.rglob(f"*{ext}"):
+            parent = file.parent
+            counts[parent] = counts.get(parent, 0) + 1
+    if not counts:
+        return None
+    best_dir, best_count = max(counts.items(), key=lambda kv: kv[1])
+    if best_count < min_count:
+        return None
+    return best_dir
+
+
+def discover_archive(source_root: Path, extensions: Tuple[str, ...]) -> Optional[Path]:
+    for ext in extensions:
+        matches = list(source_root.rglob(f"*{ext}"))
+        if matches:
+            return matches[0]
+    return None
+
+
 def sync_tree(src: Path, dst: Path, prefer_symlink: bool, overwrite: bool) -> None:
     if dst.exists() and overwrite:
         if dst.is_symlink() or dst.is_file():
@@ -117,7 +157,7 @@ def stage_annotations(name: str, source_root: Path, target_root: Path, mapping: 
         dest = target_root / f"{name}_{split}.json"
         if dest.exists() and not overwrite:
             continue
-        found = find_first(source_root, candidates)
+        found = find_first(source_root, candidates) or discover_annotation(source_root, split)
         if not found:
             print(f"  ! Missing annotations for split={split} (looked for {candidates})")
             continue
@@ -131,6 +171,8 @@ def stage_modalities(
     target_name: str,
     dir_candidates: List[str],
     archive_candidates: List[str],
+    archive_extensions: Tuple[str, ...],
+    file_extensions: Tuple[str, ...],
     prefer_symlink: bool,
     overwrite: bool,
 ) -> None:
@@ -143,10 +185,15 @@ def stage_modalities(
         sync_tree(dir_match, dest, prefer_symlink=prefer_symlink, overwrite=overwrite)
         print(f"  ✓ {target_name} dir -> {dest} (from {dir_match})")
         return
-    archive_match = find_first(source_root, archive_candidates)
+    archive_match = find_first(source_root, archive_candidates) or discover_archive(source_root, archive_extensions)
     if archive_match:
         extract_archive(archive_match, dest, overwrite=overwrite)
         print(f"  ✓ {target_name} extracted -> {dest} (from {archive_match})")
+        return
+    media_dir = discover_media_dir(source_root, file_extensions)
+    if media_dir:
+        sync_tree(media_dir, dest, prefer_symlink=prefer_symlink, overwrite=overwrite)
+        print(f"  ✓ {target_name} auto-detected dir -> {dest} (from {media_dir})")
         return
     print(f"  ! No {target_name} found (searched for dirs {dir_candidates} or archives {archive_candidates})")
 
@@ -184,6 +231,8 @@ def stage_dataset(
 
     print(f"[{name}] Staging data from {source_root} -> {target_root}")
     stage_annotations(name, source_root, target_root, cfg.get("annotations", {}), overwrite=overwrite)
+    image_exts = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+    archive_exts = (".zip", ".tar", ".tgz", ".tar.gz")
     if cfg.get("target_images"):
         stage_modalities(
             source_root,
@@ -191,16 +240,21 @@ def stage_dataset(
             cfg["target_images"],
             cfg.get("image_dirs", []),
             cfg.get("image_archives", []),
+            archive_exts,
+            image_exts,
             prefer_symlink=prefer_symlink,
             overwrite=overwrite,
         )
     if cfg.get("target_videos"):
+        video_exts = (".mp4", ".avi", ".mov", ".mkv")
         stage_modalities(
             source_root,
             target_root,
             cfg["target_videos"],
             cfg.get("video_dirs", []),
             cfg.get("video_archives", []),
+            archive_exts,
+            video_exts,
             prefer_symlink=prefer_symlink,
             overwrite=overwrite,
         )
