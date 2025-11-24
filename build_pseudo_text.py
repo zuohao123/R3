@@ -176,15 +176,15 @@ def build_captions(
     if "Qwen" in model_name and "VL" in model_name:
         print(f"正在加载 Qwen-VL 模型: {model_name}")
         try:
-            import torchvision
+            import torchvision  # noqa: F401
         except ImportError:
             print("警告: torchvision 未安装，正在尝试安装...")
             import subprocess
             subprocess.check_call(["pip", "install", "torchvision"])
-            import torchvision
-        from transformers import Qwen2VLForConditionalGeneration
+            import torchvision  # noqa: F401
 
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
+        # 使用 AutoModelForVision2Seq 让 Qwen3 自带的 trust_remote_code 选择正确的类
+        model = AutoModelForVision2Seq.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
             device_map="auto",

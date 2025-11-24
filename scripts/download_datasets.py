@@ -319,6 +319,7 @@ def ingest_hf_dataset(
         records = []
         images_dir = target_root / cfg.get("target_images", "images")
         videos_dir = target_root / cfg.get("target_videos", "videos") if cfg.get("target_videos") else None
+        print(f"aliases ds len={len(ds)}")
         for idx, sample in enumerate(ds):
             sid = first_non_null(sample, cfg.get("hf_id_col", []), f"{split}_{idx}")
             q = first_non_null(sample, cfg.get("hf_question_col", []), "")
