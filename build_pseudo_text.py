@@ -55,6 +55,19 @@ def resolve_model_path(model_name: str, cache_dir: Optional[Path], provider: str
     Resolve model weights location. If provider=modelscope, download via modelscope snapshot_download
     so weights stay in本地缓存; otherwise fallback to Hugging Face.
     """
+    def _find_hf_cached_snapshot(name: str, cache: Path) -> Optional[str]:
+        base = cache / f"models--{name.replace('/', '--')}"
+        snapshots_dir = base / "snapshots"
+        if snapshots_dir.exists():
+            candidates = sorted(snapshots_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for snap in candidates:
+                if (snap / "preprocessor_config.json").exists() or (snap / "processor_config.json").exists():
+                    return snap.as_posix()
+        # fallback: direct folder
+        if (base / "preprocessor_config.json").exists() or (base / "processor_config.json").exists():
+            return base.as_posix()
+        return None
+
     if provider.lower() == "modelscope":
         try:
             from modelscope import snapshot_download  # type: ignore
@@ -68,6 +81,10 @@ def resolve_model_path(model_name: str, cache_dir: Optional[Path], provider: str
             use_auth_token=token,
         )
         return local_dir
+    if cache_dir:
+        cached = _find_hf_cached_snapshot(model_name, Path(cache_dir))
+        if cached:
+            return cached
     return model_name
 
 
