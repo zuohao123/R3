@@ -11,9 +11,7 @@ from typing import Dict, List, Optional
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from data_pipeline.datasets.textvqa import TextVQADataset
-from data_pipeline.datasets.mp_docvqa import MPDocVQADataset
-from data_pipeline.datasets.infovqa import InfoVQADataset
+from data_pipeline.datasets import DATASET_REGISTRY, create_dataset, detect_dataset_type
 from data_pipeline.corruptions import ImageCorruptor, PseudoTextCorruptor
 from r3.r3_model import R3Model, R3ModelConfig
 from train_r3 import R3Dataset, collate_fn, load_yaml, load_pseudo_corpus
@@ -27,7 +25,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap for quick smoke tests.")
     parser.add_argument("--predictions", type=Path, default=None, help="Optional JSONL to dump predictions.")
-    parser.add_argument("--dataset_type", type=str, default="textvqa", choices=["textvqa", "mp_docvqa", "infovqa"])
+    parser.add_argument(
+        "--dataset_type",
+        type=str,
+        default="auto",
+        choices=["auto", *sorted(DATASET_REGISTRY.keys())],
+    )
     parser.add_argument("--apply_corruption", action="store_true", help="Apply pre-encoding modality drops (Image/Pseudo-text).")
     return parser.parse_args()
 
@@ -85,13 +88,13 @@ def main() -> None:
     apply_corruption = args.apply_corruption or eval_cfg.get("apply_corruption", False)
 
     dataset_root = Path(dataset_cfg["root"])
+    dataset_type = args.dataset_type
+    if dataset_type == "auto":
+        dataset_type = dataset_cfg.get("type", "auto")
+    if dataset_type == "auto":
+        dataset_type = detect_dataset_type(dataset_root)
     pseudo_corpus = load_pseudo_corpus(dataset_cfg.get("pseudo_corpus"))
-    if args.dataset_type == "mp_docvqa":
-        base_dataset = MPDocVQADataset(dataset_root, split=split)
-    elif args.dataset_type == "infovqa":
-        base_dataset = InfoVQADataset(dataset_root, split=split)
-    else:
-        base_dataset = TextVQADataset(dataset_root, split=split)
+    base_dataset = create_dataset(dataset_type, dataset_root, split=split)
 
     dataset = R3Dataset(
         base_dataset,
@@ -226,4 +229,3 @@ if __name__ == "__main__":
 #   --checkpoint path/to/ckpt.pt \
 #   --apply_corruption \
 #   --predictions preds.jsonl
-

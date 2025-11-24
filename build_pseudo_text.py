@@ -11,12 +11,7 @@ import torch
 from PIL import Image
 from transformers import AutoModelForVision2Seq, AutoProcessor
 
-from data_pipeline.datasets.textvqa import TextVQADataset
-from data_pipeline.datasets.mp_docvqa import MPDocVQADataset
-from data_pipeline.datasets.infovqa import InfoVQADataset
-from data_pipeline.datasets.chartqa import ChartQADataset
-from data_pipeline.datasets.docvqa import DocVQADataset
-from data_pipeline.datasets.slidevqa import SlideVQADataset
+from data_pipeline.datasets import DATASET_REGISTRY, create_dataset, detect_dataset_type
 from data_pipeline.pseudo_text import save_corpus
 from r3.retrieval_module import PseudoTextBuilder, PseudoTextBuilderConfig
 
@@ -205,8 +200,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build pseudo-text corpus for PMC datasets.")
     parser.add_argument("--dataset_root", type=Path, help="Path to single dataset directory.")
     parser.add_argument("--dataset_roots", type=str, nargs="+", help="Paths to multiple dataset directories.")
-    parser.add_argument("--dataset_type", type=str, default="auto", 
-                       choices=["auto", "textvqa", "mp_docvqa", "infovqa", "chartqa", "docvqa", "slidevqa"])
+    parser.add_argument(
+        "--dataset_type",
+        type=str,
+        default="auto",
+        choices=["auto", *sorted(DATASET_REGISTRY.keys())],
+    )
     parser.add_argument("--split", type=str, default="train")
     parser.add_argument("--output", type=Path, required=True, help="Destination JSONL file.")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap per dataset.")
@@ -214,64 +213,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--caption_model", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Optional vision-language caption model.")
     parser.add_argument("--default_conf", type=float, default=0.75)
     return parser.parse_args()
-
-
-def detect_dataset_type(root: Path) -> str:
-    """
-    Auto-detect dataset type based on directory structure and annotation files.
-    """
-    root = Path(root)
-    
-    # Check for specific annotation files
-    if (root / f"textvqa_train.json").exists() or (root / f"textvqa_val.json").exists():
-        return "textvqa"
-    elif (root / f"mp_docvqa_train.json").exists() or (root / f"mp_docvqa_val.json").exists():
-        return "mp_docvqa"
-    elif (root / f"infovqa_train.json").exists() or (root / f"infovqa_val.json").exists():
-        return "infovqa"
-    elif (root / f"chartqa_train.json").exists() or (root / f"chartqa_val.json").exists():
-        return "chartqa"
-    elif (root / f"docvqa_train.json").exists() or (root / f"docvqa_val.json").exists():
-        return "docvqa"
-    elif (root / f"slidevqa_train.json").exists() or (root / f"slidevqa_val.json").exists():
-        return "slidevqa"
-    
-    # Fallback: check directory names
-    root_name = root.name.lower()
-    if "textvqa" in root_name:
-        return "textvqa"
-    elif "mp_docvqa" in root_name or "mpdocvqa" in root_name:
-        return "mp_docvqa"
-    elif "infovqa" in root_name:
-        return "infovqa"
-    elif "chartqa" in root_name:
-        return "chartqa"
-    elif "docvqa" in root_name:
-        return "docvqa"
-    elif "slidevqa" in root_name:
-        return "slidevqa"
-    
-    # Default fallback
-    print(f"Warning: Could not auto-detect dataset type for {root}, defaulting to textvqa")
-    return "textvqa"
-
-
-def create_dataset(root: Path, dataset_type: str, split: str):
-    """
-    Create dataset instance based on type.
-    """
-    if dataset_type == "mp_docvqa":
-        return MPDocVQADataset(root, split=split)
-    elif dataset_type == "infovqa":
-        return InfoVQADataset(root, split=split)
-    elif dataset_type == "chartqa":
-        return ChartQADataset(root, split=split)
-    elif dataset_type == "docvqa":
-        return DocVQADataset(root, split=split)
-    elif dataset_type == "slidevqa":
-        return SlideVQADataset(root, split=split)
-    else:  # textvqa or default
-        return TextVQADataset(root, split=split)
 
 
 def process_single_dataset(root: Path, dataset_type: str, split: str, builder: PseudoTextBuilder, 
@@ -282,7 +223,7 @@ def process_single_dataset(root: Path, dataset_type: str, split: str, builder: P
     print(f"Processing dataset: {root} (type: {dataset_type}, split: {split})")
     
     try:
-        dataset = create_dataset(root, dataset_type, split)
+        dataset = create_dataset(dataset_type, root, split)
     except FileNotFoundError as e:
         print(f"Warning: Skipping {root} - {e}")
         return []
@@ -311,7 +252,15 @@ def process_single_dataset(root: Path, dataset_type: str, split: str, builder: P
                         extra.setdefault("captions", []).append(caption)
                 except Exception as e:
                     print(f"Warning: Caption generation failed for {sample['id']}: {e}")
-            # Note: args is not available in this function scope, so we skip this check
+            
+            # 处理 MTVQA 视频内容
+            if dataset_type == "mtvqa" and sample.get("video_path"):
+                try:
+                    from data_pipeline.video_utils import VideoProcessor, process_mtvqa_video
+                    video_processor = VideoProcessor(max_frames=8)
+                    sample = process_mtvqa_video(sample, video_processor, caption_fn)
+                except Exception as e:
+                    print(f"Warning: Video processing failed for {sample['id']}: {e}")
             
             # Build pseudo-text entries
             entries = builder.build(sample)
@@ -398,11 +347,11 @@ if __name__ == "__main__":
 
 # 2. 处理多个数据集 (批量处理)
 # python build_pseudo_text.py \
-#   --dataset_roots /path/to/textvqa /path/to/mp_docvqa /path/to/infovqa /path/to/chartqa \
+#   --dataset_roots /path/to/textvqa /path/to/mp_docvqa /path/to/infovqa /path/to/chartqa /path/to/mtvqa \
 #   --split train \
 #   --output ./artifacts/pseudo_text_combined_train.jsonl \
 #   --enable_ocr \
-#   --caption_model Qwen/Qwen3-VL-8B-Instruct
+#   --caption_model Qwen/Qwen2-VL-7B-Instruct
 
 # 3. 指定特定数据集类型
 # python build_pseudo_text.py \

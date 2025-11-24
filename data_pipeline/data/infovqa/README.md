@@ -22,6 +22,11 @@ infovqa/
    - 标注文件: 下载 train/val 的 JSON 标注文件
    - 图像文件: 下载信息图表图像数据
 
+### 一键整理（可选）
+```bash
+python scripts/download_datasets.py --datasets infovqa --output-root data_pipeline/data
+```
+
 ## 数据放置步骤
 
 1. 将下载的标注文件重命名并放置：

@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader, Dataset
 
-from data_pipeline.datasets.textvqa import TextVQADataset
+from data_pipeline.datasets import BasePMCDataset, create_dataset, detect_dataset_type
 from data_pipeline.corruptions import (
     ImageCorruptionConfig,
     ImageCorruptor,
@@ -32,7 +32,7 @@ from r3.retrieval_module import PseudoTextBuilder
 class R3Dataset(Dataset):
     def __init__(
         self,
-        base_dataset: TextVQADataset,
+        base_dataset: BasePMCDataset,
         vision_tokens: int,
         hidden_size: int,
         apply_corruption: bool = True,
@@ -97,6 +97,9 @@ class R3Dataset(Dataset):
     def _inline_pseudo_text(sample: Dict) -> List[str]:
         entries: List[str] = []
         extra = sample.get("extra", {}) or {}
+        for ctx in extra.get("context_evidence", []):
+            if ctx:
+                entries.append(str(ctx))
         for token in extra.get("ocr_tokens", []):
             if isinstance(token, dict):
                 span = token.get("text", "")
@@ -335,9 +338,18 @@ def main() -> None:
     dataset_section = cfg.get("dataset", {})
     dataset_root = Path(dataset_section["root"])
     split = dataset_section.get("split", "train")
+    dataset_type = dataset_section.get("type", "textvqa")
+    if dataset_type == "auto":
+        dataset_type = detect_dataset_type(dataset_root)
     pseudo_corpus = load_pseudo_corpus(dataset_section.get("pseudo_corpus"))
-    base_dataset = TextVQADataset(dataset_root, split=split)  # 构造基础数据集
-    logging.info("Dataset initialized: %s split=%s size=%d", dataset_root, split, len(base_dataset))
+    base_dataset = create_dataset(dataset_type, dataset_root, split=split)
+    logging.info(
+        "Dataset initialized: type=%s root=%s split=%s size=%d",
+        dataset_type,
+        dataset_root,
+        split,
+        len(base_dataset),
+    )
 
     train_dataset = R3Dataset(
         base_dataset,

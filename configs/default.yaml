@@ -1,5 +1,9 @@
 dataset:
   root: ./data_pipeline/data/mp_docvqa
+  type: mp_docvqa   # {textvqa, mp_docvqa, infovqa, chartqa, docvqa, slidevqa, mtvqa, auto}
+  #
+  # https://huggingface.co/datasets/ByteDance/MTVQA/tree/main/data
+  # https://huggingface.co/datasets/WinKawaks/InfoVQA/tree/main/data
   split: train
   eval_split: val
   batch_size: 2

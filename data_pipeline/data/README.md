@@ -32,36 +32,33 @@ data_pipeline/data/
 │   ├── documents/     # 文档图像 (注意目录名)
 │   ├── docvqa_train.json
 │   └── docvqa_val.json
-└── slidevqa/          # SlideVQA 数据集
+├── slidevqa/          # SlideVQA 数据集
+│   ├── README.md
+│   ├── images/        # 幻灯片图像
+│   ├── slidevqa_train.json
+│   └── slidevqa_val.json
+└── mtvqa/             # MTVQA 数据集
     ├── README.md
-    ├── images/        # 幻灯片图像
-    ├── slidevqa_train.json
-    └── slidevqa_val.json
+    ├── images/        # 图像文件
+    ├── videos/        # 视频文件
+    ├── mtvqa_train.json
+    └── mtvqa_val.json
 ```
 
 ## 快速开始
 
-### 1. 查看数据集状态
+### 1. 下载/整理数据（推荐）
 ```bash
-# 从项目根目录运行
-./scripts/setup_datasets.sh
+# 从项目根目录运行，默认同时准备 InfoVQA / MP-DocVQA / MTVQA
+python scripts/download_datasets.py --datasets infovqa mp_docvqa mtvqa \
+  --output-root data_pipeline/data \
+  --prefer-symlink   # 可选：用符号链接避免大文件复制
+
+# 仅下载 InfoVQA
+python scripts/download_datasets.py --datasets infovqa --output-root data_pipeline/data
 ```
 
-### 2. 查看特定数据集的设置说明
-```bash
-./scripts/setup_datasets.sh textvqa
-./scripts/setup_datasets.sh chartqa
-# ... 其他数据集
-```
-
-### 3. 验证数据集设置
-```bash
-# 验证所有数据集
-./scripts/setup_datasets.sh validate
-
-# 验证特定数据集
-./scripts/setup_datasets.sh validate textvqa
-```
+> 提示：MP-DocVQA 官方下载需要登录 RRC，脚本支持 `--repo-overrides mp_docvqa=<hf_repo>` 或 `--local-sources mp_docvqa=/path/to/your/manual/download` 复用本地文件。
 
 ## 数据集下载指南
 
@@ -100,7 +97,7 @@ python build_pseudo_text.py \
 
 # 批量处理所有数据集
 python build_pseudo_text.py \
-  --dataset_roots data_pipeline/data/textvqa data_pipeline/data/mp_docvqa data_pipeline/data/infovqa data_pipeline/data/chartqa data_pipeline/data/docvqa data_pipeline/data/slidevqa \
+  --dataset_roots data_pipeline/data/textvqa data_pipeline/data/mp_docvqa data_pipeline/data/infovqa data_pipeline/data/chartqa data_pipeline/data/docvqa data_pipeline/data/slidevqa data_pipeline/data/mtvqa \
   --split train \
   --output artifacts/combined_pseudo_text.jsonl \
   --enable_ocr \
@@ -124,6 +121,7 @@ python train_r3.py \
 - **ChartQA**: 统计图表，需要数值推理能力
 - **DocVQA**: 结构化文档，需要布局理解
 - **SlideVQA**: 演示文稿，需要理解演示结构
+- **MTVQA**: 多模态文本-视频问答，需要处理图像和视频内容
 
 ## 故障排除
 

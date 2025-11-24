@@ -23,6 +23,14 @@ mp_docvqa/
    - 标注文件: 下载 train/val 的 JSON 标注文件
    - 图像文件: 下载多页文档图像数据
 
+### 一键整理（可选）
+```bash
+# MP-DocVQA 通常需要从 RRC 手动下载后再运行脚本进行整理
+python scripts/download_datasets.py --datasets mp_docvqa \
+  --output-root data_pipeline/data \
+  --local-sources mp_docvqa=/path/to/mpdocvqa/files
+```
+
 ## 数据放置步骤
 
 1. 将下载的标注文件重命名并放置：
