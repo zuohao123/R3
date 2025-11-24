@@ -79,6 +79,13 @@ def resolve_model_path(
             return base.as_posix()
         return None
 
+    def _is_incomplete_snapshot(path: Path) -> bool:
+        if not path.exists():
+            return True
+        has_processor = (path / "preprocessor_config.json").exists() or (path / "processor_config.json").exists()
+        has_model = any(path.glob("model*.safetensors")) or (path / "pytorch_model.bin").exists()
+        return not (has_processor and has_model)
+
     provider = provider.lower()
     if provider == "modelscope":
         try:
@@ -96,6 +103,27 @@ def resolve_model_path(
     if cache_dir:
         cached = _find_hf_cached_snapshot(model_name, Path(cache_dir))
         if cached:
+            cached_path = Path(cached)
+            if _is_incomplete_snapshot(cached_path):
+                if local_files_only:
+                    raise FileNotFoundError(
+                        f"在本地缓存 {cached_path} 发现不完整的模型文件，且 local_files_only=True，无法补全下载。"
+                    )
+                if snapshot_download is None:
+                    raise ImportError("缺少 huggingface_hub，无法自动补全模型；请 pip install huggingface_hub。")
+                print(f"检测到不完整的模型缓存 {cached_path}，正在补全下载...")
+                local_dir = snapshot_download(
+                    repo_id=model_name,
+                    cache_dir=str(cache_dir),
+                    token=token,
+                    repo_type="model",
+                    local_files_only=False,
+                    allow_patterns=["*"],
+                    resume_download=True,
+                    force_download=True,
+                )
+                downloaded = _find_hf_cached_snapshot(model_name, Path(cache_dir))
+                return downloaded or local_dir
             return cached
         if provider == "huggingface":
             if local_files_only:
@@ -111,6 +139,7 @@ def resolve_model_path(
                 repo_type="model",
                 local_files_only=False,
                 allow_patterns=["*"],
+                resume_download=True,
             )
             downloaded = _find_hf_cached_snapshot(model_name, Path(cache_dir))
             return downloaded or local_dir
