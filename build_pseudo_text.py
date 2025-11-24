@@ -11,6 +11,11 @@ import torch
 from PIL import Image
 from transformers import AutoConfig, AutoModelForVision2Seq, AutoProcessor
 
+try:
+    from huggingface_hub import snapshot_download  # type: ignore
+except Exception:  # pragma: no cover
+    snapshot_download = None
+
 from data_pipeline.datasets import DATASET_REGISTRY, create_dataset, detect_dataset_type
 from data_pipeline.pseudo_text import save_corpus
 from r3.retrieval_module import PseudoTextBuilder, PseudoTextBuilderConfig
@@ -50,7 +55,13 @@ def run_ocr(image_path: str) -> List[Dict]:
     return tokens
 
 
-def resolve_model_path(model_name: str, cache_dir: Optional[Path], provider: str, token: Optional[str]) -> str:
+def resolve_model_path(
+    model_name: str,
+    cache_dir: Optional[Path],
+    provider: str,
+    token: Optional[str],
+    local_files_only: bool = False,
+) -> str:
     """
     Resolve model weights location. If provider=modelscope, download via modelscope snapshot_download
     so weights stay in本地缓存; otherwise fallback to Hugging Face.
@@ -68,7 +79,8 @@ def resolve_model_path(model_name: str, cache_dir: Optional[Path], provider: str
             return base.as_posix()
         return None
 
-    if provider.lower() == "modelscope":
+    provider = provider.lower()
+    if provider == "modelscope":
         try:
             from modelscope import snapshot_download  # type: ignore
         except Exception as exc:  # pragma: no cover
@@ -85,6 +97,24 @@ def resolve_model_path(model_name: str, cache_dir: Optional[Path], provider: str
         cached = _find_hf_cached_snapshot(model_name, Path(cache_dir))
         if cached:
             return cached
+        if provider == "huggingface":
+            if local_files_only:
+                raise FileNotFoundError(
+                    f"在本地缓存 {cache_dir} 未找到 {model_name}，且 local_files_only=True，无法联网下载。"
+                )
+            if snapshot_download is None:
+                raise ImportError("缺少 huggingface_hub，无法自动下载模型；请 pip install huggingface_hub。")
+            local_dir = snapshot_download(
+                repo_id=model_name,
+                cache_dir=str(cache_dir),
+                token=token,
+                repo_type="model",
+                local_files_only=False,
+                allow_patterns=["*"],
+                trust_remote_code=True,
+            )
+            downloaded = _find_hf_cached_snapshot(model_name, Path(cache_dir))
+            return downloaded or local_dir
     return model_name
 
 
