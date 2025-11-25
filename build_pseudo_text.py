@@ -207,21 +207,21 @@ def build_captions(
         def qwen_infer(image_path: str) -> Optional[str]:
             try:
                 image = Image.open(image_path).convert("RGB")
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": image},
-                            {"type": "text", "text": "Describe this image briefly."},
-                        ],
-                    }
-                ]
-                text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                image_inputs, video_inputs = processor.process_vision_info(messages)
+                prompt_text = "Describe this image briefly."
+                if hasattr(processor, "apply_chat_template"):
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": image},
+                                {"type": "text", "text": prompt_text},
+                            ],
+                        }
+                    ]
+                    prompt_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 inputs = processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
+                    text=[prompt_text],
+                    images=[image],
                     padding=True,
                     return_tensors="pt",
                 )

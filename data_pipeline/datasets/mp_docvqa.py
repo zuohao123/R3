@@ -38,39 +38,65 @@ class MPDocVQADataset(BasePMCDataset):
             payload = json.load(f)
         if not isinstance(payload, list):
             raise ValueError("MP-DocVQA annotation must be a list of question entries.")
-        
-        # Convert question-based format to page-based format for processing
-        normalized: List[Dict] = []
-        
-        for entry in payload:
-            question_id = entry.get("questionId")
-            question = entry["question"]
-            doc_id = entry["doc_id"]
-            page_ids = entry.get("page_ids", [])
-            answers = entry.get("answers", [])
-            answer_page_idx = entry.get("answer_page_idx", 0)
-            
-            # Process each page in the document for this question
-            for page_idx, page_id in enumerate(page_ids):
-                # Create a sample for each page
-                sample = {
-                    "id": f"{question_id}_{page_id}",
-                    "questionId": question_id,
+
+        # Pattern A: question-level entries with page_ids (官方格式)
+        if any(isinstance(e.get("page_ids"), list) for e in payload):
+            normalized: List[Dict] = []
+            for entry in payload:
+                question_id = entry.get("questionId")
+                question = entry["question"]
+                doc_id = entry.get("doc_id") or entry.get("docId") or entry.get("id") or question_id
+                page_ids = entry.get("page_ids", [])
+                answers = entry.get("answers", [])
+                answer_page_idx = entry.get("answer_page_idx", 0)
+
+                for page_idx, page_id in enumerate(page_ids):
+                    sample = {
+                        "id": f"{question_id}_{page_id}",
+                        "questionId": question_id,
+                        "question": question,
+                        "doc_id": doc_id,
+                        "page_id": page_id,
+                        "page_idx": page_idx,
+                        "answer": answers[0] if answers else "",
+                        "all_answers": answers,
+                        "answer_page_idx": answer_page_idx,
+                        "is_answer_page": (page_idx == answer_page_idx),
+                        "total_pages": len(page_ids),
+                        "all_page_ids": page_ids,
+                        "data_split": entry.get("data_split", self.split),
+                    }
+                    normalized.append(sample)
+            return normalized
+
+        # Pattern B: 已展开的每页记录，包含 image/page_id/question/answer
+        normalized_flat: List[Dict] = []
+        for idx, entry in enumerate(payload):
+            sid = entry.get("id") or f"{self.split}_{idx}"
+            page_id = entry.get("page_id") or entry.get("image") or entry.get("image_id") or sid
+            question = entry.get("question", "")
+            answer = entry.get("answer", entry.get("answers", [""])[0] if isinstance(entry.get("answers"), list) else "")
+            normalized_flat.append(
+                {
+                    "id": str(sid),
+                    "questionId": entry.get("questionId"),
                     "question": question,
-                    "doc_id": doc_id,
+                    "doc_id": entry.get("doc_id") or entry.get("docId"),
                     "page_id": page_id,
-                    "page_idx": page_idx,
-                    "answer": answers[0] if answers else "",  # Take first answer
-                    "all_answers": answers,
-                    "answer_page_idx": answer_page_idx,
-                    "is_answer_page": (page_idx == answer_page_idx),
-                    "total_pages": len(page_ids),
-                    "all_page_ids": page_ids,
-                    "data_split": entry.get("data_split", self.split)
+                    "page_idx": entry.get("page_idx", 0),
+                    "answer": answer,
+                    "all_answers": entry.get("answers", [answer] if answer else []),
+                    "answer_page_idx": entry.get("answer_page_idx", 0),
+                    "is_answer_page": entry.get("is_answer_page", True),
+                    "total_pages": entry.get("total_pages", 1),
+                    "all_page_ids": entry.get("all_page_ids", [page_id]),
+                    "data_split": entry.get("data_split", self.split),
+                    "ocr_tokens": entry.get("ocr_tokens", []),
+                    "captions": entry.get("captions", []),
+                    "context_evidence": entry.get("context_evidence", []),
                 }
-                normalized.append(sample)
-        
-        return normalized
+            )
+        return normalized_flat
 
     def __getitem__(self, idx: int) -> Dict:
         sample_meta = self.samples[idx]
@@ -105,7 +131,7 @@ class MPDocVQADataset(BasePMCDataset):
 
     def _load_raw_item(self, sample_meta: Dict) -> Dict:
         # Use page_id as the image identifier
-        page_id = sample_meta.get("page_id", "")
+        page_id = sample_meta.get("page_id") or sample_meta.get("image") or sample_meta.get("image_path") or ""
         image_path = self._resolve_image_path(page_id)
         
         extra = {
@@ -135,34 +161,40 @@ class MPDocVQADataset(BasePMCDataset):
     def _resolve_image_path(self, identifier: str) -> str:
         if not identifier:
             return identifier
-        
+
+        # Accept already-resolved relative paths
+        rel_candidate = self.root / identifier
+        if rel_candidate.exists():
+            return rel_candidate.as_posix()
+
         # For MP-DocVQA, page_id format is typically "docid_p0", "docid_p1", etc.
         path_obj = Path(identifier)
         candidates = [
             path_obj.name,
             f"{path_obj.name}.png",
-            f"{path_obj.name}.jpg", 
-            f"{path_obj.name}.jpeg"
+            f"{path_obj.name}.jpg",
+            f"{path_obj.name}.jpeg",
         ]
-        
+
         # Also try without the page suffix for some datasets
         if "_p" in identifier:
             base_name = identifier.split("_p")[0]
             page_num = identifier.split("_p")[1] if "_p" in identifier else "0"
-            candidates.extend([
-                f"{base_name}_page_{page_num}.png",
-                f"{base_name}_page_{page_num}.jpg",
-                f"{base_name}_{page_num}.png",
-                f"{base_name}_{page_num}.jpg",
-            ])
-        
+            candidates.extend(
+                [
+                    f"{base_name}_page_{page_num}.png",
+                    f"{base_name}_page_{page_num}.jpg",
+                    f"{base_name}_{page_num}.png",
+                    f"{base_name}_{page_num}.jpg",
+                ]
+            )
+
         for candidate in candidates:
             resolved = self.image_root / candidate
             if resolved.exists():
                 return resolved.as_posix()
-        
-        # Return the original identifier if no file found
-        return str(self.image_root / f"{identifier}.png")
+
+        return str(self.image_root / path_obj.name)
 
     def _normalize_ocr_tokens(self, tokens: List) -> List[Dict]:
         normalized: List[Dict] = []
