@@ -153,6 +153,7 @@ def build_captions(
     local_files_only: bool = False,
     provider: str = "huggingface",
     ignore_mismatched_sizes: bool = True,
+    caption_device: str = "auto",
 ):
     model_path = resolve_model_path(model_name, cache_dir, provider, token)
     # 显式检查 config.model_type，提示用户是否加载到了正确的 Qwen 版本
@@ -173,6 +174,17 @@ def build_captions(
             print(f"  使用的权重路径: {model_path}")
     except Exception as cfg_err:
         print(f"提示: 读取 config 失败（可忽略）: {cfg_err}")
+
+    # 设备选择，避免显存不足可设置 caption_device=cpu
+    def _select_device(pref: str) -> str:
+        if pref in ("cpu", "cuda"):
+            return pref
+        return "cuda" if torch.cuda.is_available() else "cpu"
+
+    target_device = _select_device(caption_device)
+    use_device_map = "auto" if target_device == "cuda" else None
+    target_dtype = torch.bfloat16 if target_device == "cuda" else torch.float32
+
     if "Qwen" in model_name and "VL" in model_name:
         print(f"正在加载 Qwen-VL 模型: {model_name}")
         try:
@@ -186,14 +198,16 @@ def build_captions(
         # 使用 AutoModelForVision2Seq 让 Qwen3 自带的 trust_remote_code 选择正确的类
         model = AutoModelForVision2Seq.from_pretrained(
             model_path,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
+            torch_dtype=target_dtype,
+            device_map=use_device_map,
             trust_remote_code=True,
             cache_dir=cache_dir,
             token=token,
             local_files_only=local_files_only,
             ignore_mismatched_sizes=ignore_mismatched_sizes,
         )
+        if target_device == "cpu":
+            model = model.to("cpu")
         processor = AutoProcessor.from_pretrained(
             model_path,
             trust_remote_code=True,
@@ -225,7 +239,7 @@ def build_captions(
                     padding=True,
                     return_tensors="pt",
                 )
-                inputs = inputs.to("cuda" if torch.cuda.is_available() else "cpu")
+                inputs = inputs.to(target_device)
                 with torch.no_grad():
                     generated_ids = model.generate(**inputs, max_new_tokens=64)
                 generated_ids_trimmed = [
@@ -317,6 +331,13 @@ def parse_args() -> argparse.Namespace:
         "--ignore_mismatched_sizes",
         action="store_true",
         help="Pass ignore_mismatched_sizes=True when loading caption model (helps Qwen3 checkpoints).",
+    )
+    parser.add_argument(
+        "--caption_device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Device for caption generation; set cpu to避免显存不足。",
     )
     return parser.parse_args()
 
@@ -416,6 +437,7 @@ def main() -> None:
                 local_files_only=args.local_files_only,
                 provider=args.provider,
                 ignore_mismatched_sizes=args.ignore_mismatched_sizes or True,
+                caption_device=args.caption_device,
             )
         except Exception as e:
             print(f"警告: 图像描述模型初始化失败: {e}")
