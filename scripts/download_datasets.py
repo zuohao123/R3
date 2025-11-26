@@ -85,8 +85,25 @@ DATASETS: Dict[str, Dict] = {
         "hf_repo": "ByteDance/MTVQA",
         "hf_split_map": {"train": ["train"], "val": ["validation", "val"], "test": ["test"]},
         "hf_id_col": ["id", "question_id"],
-        "hf_question_col": ["question"],
-        "hf_answer_col": ["answer", "answers"],
+        "hf_question_col": [
+            "question",
+            "question_en",
+            "question_text",
+            "query",
+            "prompt",
+            "question_cn",
+            "question_ar",
+        ],
+        "hf_answer_col": [
+            "answer",
+            "answers",
+            "answer_text",
+            "answer_en",
+            "answer_cn",
+            "answer_ar",
+            "label",
+            "labels",
+        ],
         "hf_image_col": ["image", "image_path"],
         "hf_video_col": ["video", "video_path"],
         "target_images": "images",
@@ -324,6 +341,18 @@ def ingest_hf_dataset(
             sid = first_non_null(sample, cfg.get("hf_id_col", []), f"{split}_{idx}")
             q = first_non_null(sample, cfg.get("hf_question_col", []), "")
             ans = first_non_null(sample, cfg.get("hf_answer_col", []), "")
+            # MTVQA: 有些样本只提供 qa_pairs 列（[{question, answer}, ...]），或 qa_pairs 是字符串
+            qa_raw = sample.get("qa_pairs")
+            if (not q or not ans) and qa_raw:
+                qa_list = qa_raw
+                if isinstance(qa_raw, str):
+                    try:
+                        qa_list = json.loads(qa_raw)
+                    except Exception:
+                        qa_list = []
+                if isinstance(qa_list, list) and qa_list:
+                    q = q or qa_list[0].get("question", "")
+                    ans = ans or qa_list[0].get("answer", "")
             if isinstance(ans, list):
                 ans = ans[0] if ans else ""
             img_obj = first_non_null(sample, cfg.get("hf_image_col", [])) if cfg.get("hf_image_col") else None

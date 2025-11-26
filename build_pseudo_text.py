@@ -154,6 +154,7 @@ def build_captions(
     provider: str = "huggingface",
     ignore_mismatched_sizes: bool = True,
     caption_device: str = "auto",
+    caption_device_map: str = "auto",
 ):
     model_path = resolve_model_path(model_name, cache_dir, provider, token)
     # 显式检查 config.model_type，提示用户是否加载到了正确的 Qwen 版本
@@ -182,7 +183,7 @@ def build_captions(
         return "cuda" if torch.cuda.is_available() else "cpu"
 
     target_device = _select_device(caption_device)
-    use_device_map = "auto" if target_device == "cuda" else None
+    use_device_map = caption_device_map if target_device == "cuda" else None
     target_dtype = torch.bfloat16 if target_device == "cuda" else torch.float32
 
     if "Qwen" in model_name and "VL" in model_name:
@@ -339,6 +340,13 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "cpu", "cuda"],
         help="Device for caption generation; set cpu to避免显存不足。",
     )
+    parser.add_argument(
+        "--caption_device_map",
+        type=str,
+        default="auto",
+        choices=["auto", "none"],
+        help="Device map for caption model when using CUDA; auto 启用多卡切分，none 表示放在单卡。",
+    )
     return parser.parse_args()
 
 
@@ -414,6 +422,35 @@ def process_single_dataset(root: Path, dataset_type: str, split: str, builder: P
 
 def main() -> None:
     args = parse_args()
+
+    # 示例（中文说明）:
+    # 单卡/CPU 生成伪文本 + OCR：
+    # python build_pseudo_text.py \
+    #   --dataset_root data_pipeline/data/infovqa \
+    #   --dataset_type infovqa \
+    #   --split train \
+    #   --output artifacts/infovqa_pseudo_text_train.jsonl \
+    #   --enable_ocr \
+    #   --caption_model Qwen/Qwen3-VL-8B-Instruct \
+    #   --provider huggingface \
+    #   --model_cache_dir ./hf_cache \
+    #   --ignore_mismatched_sizes \
+    #   --caption_device cpu \
+    #   --caption_device_map none
+    #
+    # 多卡 GPU 生成（依赖 transformers device_map 自动切分）：
+    # python build_pseudo_text.py \
+    #   --dataset_root data_pipeline/data/infovqa \
+    #   --dataset_type infovqa \
+    #   --split train \
+    #   --output artifacts/infovqa_pseudo_text_train.jsonl \
+    #   --enable_ocr \
+    #   --caption_model Qwen/Qwen3-VL-8B-Instruct \
+    #   --provider huggingface \
+    #   --model_cache_dir ./hf_cache \
+    #   --ignore_mismatched_sizes \
+    #   --caption_device cuda \
+    #   --caption_device_map auto
     
     # Determine dataset roots to process
     dataset_roots = []
@@ -438,6 +475,7 @@ def main() -> None:
                 provider=args.provider,
                 ignore_mismatched_sizes=args.ignore_mismatched_sizes or True,
                 caption_device=args.caption_device,
+                caption_device_map=None if args.caption_device_map == "none" else "auto",
             )
         except Exception as e:
             print(f"警告: 图像描述模型初始化失败: {e}")

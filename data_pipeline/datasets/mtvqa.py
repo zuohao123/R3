@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Dict, List
+import json
 
 from .base_dataset import BasePMCDataset
 
@@ -46,6 +47,21 @@ class MTVQADataset(BasePMCDataset):
             sample = dict(entry)
             sid = entry.get("id") or f"{self.split}_{idx}"
             sample["id"] = sid
+            # Fallback: if question/answer empty, try qa_pairs
+            if (not sample.get("question")) or (not sample.get("answer")):
+                qa_raw = entry.get("qa_pairs")
+                qa_list = qa_raw
+                if isinstance(qa_raw, str):
+                    try:
+                        qa_list = json.loads(qa_raw)
+                    except Exception:
+                        qa_list = []
+                if isinstance(qa_list, list) and qa_list:
+                    sample.setdefault("question", qa_list[0].get("question", ""))
+                    first_ans = qa_list[0].get("answer", "")
+                    if isinstance(first_ans, list):
+                        first_ans = first_ans[0] if first_ans else ""
+                    sample.setdefault("answer", first_ans)
             normalized.append(sample)
         return normalized
 

@@ -27,6 +27,7 @@ from r3.r3_model import R3Model, R3ModelConfig
 from transformers import Trainer, TrainingArguments
 from transformers.trainer_callback import TrainerCallback
 from r3.retrieval_module import PseudoTextBuilder
+import torch.distributed as dist
 
 
 class R3Dataset(Dataset):
@@ -329,6 +330,13 @@ def load_pseudo_corpus(path: Optional[str]) -> Dict[str, List[str]]:
 
 def main() -> None:
     args = parse_args()
+
+    # 运行示例（中文说明）:
+    # 单卡训练:
+    # python train_r3.py --config configs/default.yaml --device cuda --output_dir checkpoints/r3_lora
+    #
+    # 多卡训练 (torchrun 自动启用 DDP):
+    # torchrun --nproc_per_node=4 train_r3.py --config configs/default.yaml --device cuda --output_dir checkpoints/r3_lora
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s - %(levelname)s - %(message)s",
@@ -384,6 +392,7 @@ def main() -> None:
     model = R3Model(model_cfg)
     logging.info("Model initialized with backbone %s", model_cfg.model_name)
 
+    ddp = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
         num_train_epochs=training_section.get("epochs", 1),
@@ -395,6 +404,8 @@ def main() -> None:
         report_to="none",
         remove_unused_columns=False,
         bf16=model_cfg.bf16 and torch.cuda.is_available(),
+        ddp_find_unused_parameters=False if ddp else None,
+        ddp_backend="nccl" if ddp else None,
     )
 
     trainer = R3Trainer(
