@@ -155,6 +155,7 @@ def build_captions(
     ignore_mismatched_sizes: bool = True,
     caption_device: str = "auto",
     caption_device_map: str = "auto",
+    caption_max_new_tokens: int = 32,
 ):
     model_path = resolve_model_path(model_name, cache_dir, provider, token)
     # 显式检查 config.model_type，提示用户是否加载到了正确的 Qwen 版本
@@ -242,7 +243,7 @@ def build_captions(
                 )
                 inputs = inputs.to(target_device)
                 with torch.no_grad():
-                    generated_ids = model.generate(**inputs, max_new_tokens=64)
+                    generated_ids = model.generate(**inputs, max_new_tokens=caption_max_new_tokens)
                 generated_ids_trimmed = [
                     out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
                 ]
@@ -282,7 +283,7 @@ def build_captions(
             image = Image.open(image_path).convert("RGB")
             inputs = processor(images=image, return_tensors="pt")
             with torch.no_grad():
-                generated = model.generate(**inputs, max_new_tokens=64)
+                generated = model.generate(**inputs, max_new_tokens=caption_max_new_tokens)
             text = processor.batch_decode(generated, skip_special_tokens=True)[0]
             return text.strip()
         except Exception as e:
@@ -309,8 +310,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--caption_model",
         type=str,
-        default="Qwen/Qwen3-VL-8B-Instruct",
-        help="Optional vision-language caption model.",
+        default=None,
+        help="Optional vision-language caption model (默认为空，不启用 caption 生成)。",
     )
     parser.add_argument("--default_conf", type=float, default=0.75)
     parser.add_argument(
@@ -352,6 +353,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=500,
         help="处理进度日志间隔（样本数）。",
+    )
+    parser.add_argument(
+        "--caption_max_new_tokens",
+        type=int,
+        default=32,
+        help="Caption 生成的最大新 token 数，减小可显著加速/减小显存占用。",
     )
     return parser.parse_args()
 
@@ -447,7 +454,6 @@ def main() -> None:
     #   --split train \
     #   --output artifacts/infovqa_pseudo_text_train.jsonl \
     #   --enable_ocr \
-    #   --caption_model Qwen/Qwen3-VL-8B-Instruct \
     #   --provider huggingface \
     #   --model_cache_dir ./hf_cache \
     #   --ignore_mismatched_sizes \
@@ -461,7 +467,6 @@ def main() -> None:
     #   --split train \
     #   --output artifacts/infovqa_pseudo_text_train.jsonl \
     #   --enable_ocr \
-    #   --caption_model Qwen/Qwen3-VL-8B-Instruct \
     #   --provider huggingface \
     #   --model_cache_dir ./hf_cache \
     #   --ignore_mismatched_sizes \
@@ -492,6 +497,7 @@ def main() -> None:
                 ignore_mismatched_sizes=args.ignore_mismatched_sizes or True,
                 caption_device=args.caption_device,
                 caption_device_map=None if args.caption_device_map == "none" else "auto",
+                caption_max_new_tokens=args.caption_max_new_tokens,
             )
         except Exception as e:
             print(f"警告: 图像描述模型初始化失败: {e}")
