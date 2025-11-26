@@ -347,11 +347,25 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "none"],
         help="Device map for caption model when using CUDA; auto 启用多卡切分，none 表示放在单卡。",
     )
+    parser.add_argument(
+        "--log_interval",
+        type=int,
+        default=500,
+        help="处理进度日志间隔（样本数）。",
+    )
     return parser.parse_args()
 
 
-def process_single_dataset(root: Path, dataset_type: str, split: str, builder: PseudoTextBuilder, 
-                          caption_fn, enable_ocr: bool, limit: Optional[int] = None) -> List[Dict]:
+def process_single_dataset(
+    root: Path,
+    dataset_type: str,
+    split: str,
+    builder: PseudoTextBuilder,
+    caption_fn,
+    enable_ocr: bool,
+    limit: Optional[int] = None,
+    log_interval: int = 500,
+) -> List[Dict]:
     """
     Process a single dataset and return pseudo-text artifacts.
     """
@@ -415,6 +429,8 @@ def process_single_dataset(root: Path, dataset_type: str, split: str, builder: P
         except Exception as e:
             print(f"Warning: Failed to process sample {idx} from {root}: {e}")
             continue
+        if log_interval and (idx + 1) % log_interval == 0:
+            print(f"  进度: {idx+1}/{upper} 样本已处理")
     
     print(f"Processed {len(artifacts)} samples from {root}")
     return artifacts
@@ -496,8 +512,14 @@ def main() -> None:
         
         # Process this dataset
         artifacts = process_single_dataset(
-            root, dataset_type, args.split, builder, caption_fn, 
-            args.enable_ocr, args.limit
+            root,
+            dataset_type,
+            args.split,
+            builder,
+            caption_fn,
+            args.enable_ocr,
+            args.limit,
+            args.log_interval,
         )
         all_artifacts.extend(artifacts)
     
