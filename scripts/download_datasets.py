@@ -14,6 +14,7 @@ import tarfile
 import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from huggingface_hub import snapshot_download
@@ -109,6 +110,26 @@ DATASETS: Dict[str, Dict] = {
         "target_images": "images",
         "target_videos": "videos",
         "canonical": "mtvqa",
+    },
+    "chartqa_hf": {
+        "hf_repo": "HuggingfaceM4/ChartQA",
+        "hf_split_map": {"train": ["train"], "val": ["val", "validation"], "test": ["test"]},
+        "hf_id_col": ["id", "question_id"],
+        "hf_question_col": ["question", "query"],
+        "hf_answer_col": ["answer", "label"],
+        "hf_image_col": ["image", "image_path", "image_filename"],
+        "target_images": "charts",
+        "canonical": "chartqa",
+    },
+    "docvqa_hf": {
+        "hf_repo": "naver-clova-ix/DocVQA",
+        "hf_split_map": {"train": ["train"], "val": ["val", "validation"], "test": ["test"]},
+        "hf_id_col": ["questionId", "id"],
+        "hf_question_col": ["question", "query"],
+        "hf_answer_col": ["answer", "answers"],
+        "hf_image_col": ["image", "image_path", "image_filename"],
+        "target_images": "documents",
+        "canonical": "docvqa",
     },
 }
 
@@ -321,6 +342,7 @@ def ingest_hf_dataset(
     hf_repo: str,
     hf_token: Optional[str],
     hf_cache: Optional[Path],
+    num_proc: int = 4,
 ) -> None:
     if load_dataset is None:
         raise ImportError("datasets 库未安装，无法直接读取 HuggingFace 数据集")
@@ -333,15 +355,15 @@ def ingest_hf_dataset(
             print(f"  ! Split {split} not found in {hf_repo} (checked {aliases})")
             continue
         ds = ds_dict[hf_split]
-        records = []
+        records: List[Dict] = []
         images_dir = target_root / cfg.get("target_images", "images")
         videos_dir = target_root / cfg.get("target_videos", "videos") if cfg.get("target_videos") else None
-        print(f"aliases ds len={len(ds)}")
-        for idx, sample in enumerate(ds):
+
+        def process_sample(idx_sample):
+            idx, sample = idx_sample
             sid = first_non_null(sample, cfg.get("hf_id_col", []), f"{split}_{idx}")
             q = first_non_null(sample, cfg.get("hf_question_col", []), "")
             ans = first_non_null(sample, cfg.get("hf_answer_col", []), "")
-            # MTVQA: 有些样本只提供 qa_pairs 列（[{question, answer}, ...]），或 qa_pairs 是字符串
             qa_raw = sample.get("qa_pairs")
             if (not q or not ans) and qa_raw:
                 qa_list = qa_raw
@@ -374,7 +396,17 @@ def ingest_hf_dataset(
             for field in ("ocr_tokens", "captions", "context_evidence"):
                 if field in sample:
                     record[field] = sample[field]
-            records.append(record)
+            return record
+
+        if num_proc and num_proc > 1:
+            with ThreadPoolExecutor(max_workers=num_proc) as ex:
+                futures = {ex.submit(process_sample, (idx, sample)): idx for idx, sample in enumerate(ds)}
+                for fut in as_completed(futures):
+                    rec = fut.result()
+                    records.append(rec)
+        else:
+            for idx, sample in enumerate(ds):
+                records.append(process_sample((idx, sample)))
         out_path = target_root / f"{name}_{split}.json"
         with out_path.open("w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False)
@@ -398,6 +430,7 @@ def stage_dataset(
     hf_cache: Optional[Path],
     prefer_symlink: bool,
     overwrite: bool,
+    num_proc: int,
 ) -> None:
     target_root.mkdir(parents=True, exist_ok=True)
     # HuggingFace-native ingestion (parquet → json + images)
@@ -412,6 +445,7 @@ def stage_dataset(
             hf_repo=cfg["hf_repo"],
             hf_token=hf_token,
             hf_cache=hf_cache,
+            num_proc=num_proc,
         )
         return
 
@@ -474,6 +508,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-cache", type=Path, default=None, help="Optional cache dir for HF snapshots.")
     parser.add_argument("--prefer-symlink", action="store_true", help="Symlink instead of copying media folders.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing files/folders.")
+    parser.add_argument("--num-proc", type=int, default=4, help="并行处理样本的线程数（仅 HF ingestion 阶段）。")
     return parser.parse_args()
 
 
@@ -496,6 +531,7 @@ def main() -> None:
                 hf_cache=args.hf_cache,
                 prefer_symlink=args.prefer_symlink,
                 overwrite=args.overwrite,
+                num_proc=args.num_proc,
             )
         except Exception as exc:  # pragma: no cover
             print(f"[{name}] Failed: {exc}")
