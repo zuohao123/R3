@@ -518,7 +518,7 @@ def process_single_dataset(
             # Build pseudo-text entries
             entries = builder.build(sample)
             if entries:
-                return {
+                artifact = {
                     "doc_id": sample["id"],
                     "pseudo_text": entries,
                     "metadata": {
@@ -530,6 +530,16 @@ def process_single_dataset(
                         "dataset_root": str(root),
                     },
                 }
+                preview = {
+                    "doc_id": sample.get("id", ""),
+                    "question": sample.get("question", ""),
+                    "answer": sample.get("answer", ""),
+                    "image_path": sample.get("image_path", ""),
+                    "ocr_text": " ".join(t.get("text", "") for t in (extra.get("ocr_tokens") or [])[:20]).strip(),
+                    "captions": extra.get("captions", []),
+                    "pseudo_text": entries,
+                }
+                return {"artifact": artifact, "preview": preview}
         except Exception as e:
             print(f"Warning: Failed to process sample {idx} from {root}: {e}")
         return None
@@ -542,11 +552,22 @@ def process_single_dataset(
         pct = done / upper * 100 if upper else 0
         preview_txt = ""
         if sample_preview:
-            pt = sample_preview.get("pseudo_text") or []
-            snippet = pt[0] if pt else ""
-            if isinstance(snippet, str) and len(snippet) > 80:
-                snippet = snippet[:80] + "..."
-            preview_txt = f" | 示例: {sample_preview.get('doc_id')} -> {snippet}"
+            pt_list = sample_preview.get("pseudo_text") or []
+            pt_joined = " | ".join(str(x) for x in pt_list)
+            if len(pt_joined) > 200:
+                pt_joined = pt_joined[:200] + "..."
+            ocr_str = sample_preview.get("ocr_text", "")
+            if len(ocr_str) > 200:
+                ocr_str = ocr_str[:200] + "..."
+            cap_list = sample_preview.get("captions") or []
+            cap_joined = " | ".join(str(c) for c in cap_list)
+            if len(cap_joined) > 200:
+                cap_joined = cap_joined[:200] + "..."
+            preview_txt = (
+                f" | 示例 doc={sample_preview.get('doc_id')} "
+                f"Q={sample_preview.get('question','')} A={sample_preview.get('answer','')} "
+                f"OCR={ocr_str} Caps={cap_joined} Pseudo={pt_joined}"
+            )
         print(f"  进度: {done}/{upper} ({pct:.1f}%) - {format_eta(eta)} - {rate:.1f} it/s{preview_txt}")
 
     if num_workers and num_workers > 1:
@@ -556,8 +577,8 @@ def process_single_dataset(
             for fut in as_completed(futures):
                 res = fut.result()
                 if res:
-                    artifacts.append(res)
-                    sample_preview = res
+                    artifacts.append(res["artifact"])
+                    sample_preview = res.get("preview")
                 done += 1
                 if log_interval and done % log_interval == 0:
                     log_progress(done)
@@ -565,8 +586,8 @@ def process_single_dataset(
         for idx in range(upper):
             res = handle_idx(idx)
             if res:
-                artifacts.append(res)
-                sample_preview = res
+                artifacts.append(res["artifact"])
+                sample_preview = res.get("preview")
             if log_interval and (idx + 1) % log_interval == 0:
                 log_progress(idx + 1)
     
