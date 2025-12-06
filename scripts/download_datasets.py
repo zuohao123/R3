@@ -435,14 +435,15 @@ def stage_dataset(
     target_root.mkdir(parents=True, exist_ok=True)
     # HuggingFace-native ingestion (parquet → json + images)
     if cfg.get("hf_repo"):
+        hf_repo = repo_id or cfg["hf_repo"]
         if load_dataset is None:
             raise ImportError("请先安装 datasets 库: pip install datasets")
-        print(f"[{name}] Loading HuggingFace dataset {cfg['hf_repo']} ...")
+        print(f"[{name}] Loading HuggingFace dataset {hf_repo} ...")
         ingest_hf_dataset(
             name=cfg.get("canonical", name),
             cfg=cfg,
             target_root=target_root,
-            hf_repo=cfg["hf_repo"],
+            hf_repo=hf_repo,
             hf_token=hf_token,
             hf_cache=hf_cache,
             num_proc=num_proc,
@@ -519,7 +520,7 @@ def main() -> None:
 
     for name in args.datasets:
         cfg = DATASETS[name]
-        repo_id = repo_overrides.get(name, cfg.get("repo_id"))
+        repo_id = repo_overrides.get(name, cfg.get("repo_id") or cfg.get("hf_repo"))
         try:
             stage_dataset(
                 name=name,

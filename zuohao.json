@@ -1,0 +1,96 @@
+{
+    "mode": "lightllm_integrated",
+    "model_key": "Qwen3_0.6B-politics-v5",
+    "train_dataset": "/home/web_server/antispam/project/gaoshiqi/llm.test",
+    "test_dataset": "/home/web_server/antispam/project/gaoshiqi/llm.test",
+    "task": "LlmClassification",
+    "training_args": {
+        "output_dir": "llm_test_new_code1",
+        "deepspeed":false,
+        "do_train": true,
+        "do_eval": true,
+        "per_device_train_batch_size": 40,
+        "per_device_eval_batch_size": 40,
+        "gradient_accumulation_steps": 1,
+        "num_train_epochs": 1,
+        "weight_decay": 5e-4,
+        "adam_beta1": 0.9,
+        "adam_beta2": 0.99,
+        "learning_rate": 1e-4,
+        "dataloader_num_workers": 4,
+        "dataloader_pin_memory": true,
+        "save_total_limit": 3,
+        "logging_steps": 10,
+        "fp16": false,
+        "bf16": false,
+        "bf16_full_eval": false,
+        "eval_strategy": "epoch",
+        "max_grad_norm": 1,
+        "warmup_ratio": 0.05,
+        "save_safetensors": true,
+        "warmup_steps": 0,
+        "label_smoothing_factor": 0,
+        "remove_unused_columns": false,
+        "seed": 42,
+        "data_seed": 42,
+        "lr_scheduler_type": "cosine",
+        "adam_epsilon": 1e-8,
+        "load_best_model_at_end": false,
+        "save_strategy": "steps",
+        "save_steps": 1000,
+        "report_to": "tensorboard"
+    },
+    "train_dataset_args": {
+        "data_type": "text",
+        "label_col": "labels",
+        "feature_col": "text",
+        "preprocess": {
+            "transforms": {
+                "PromptTemplate": "在做评论文本主题分类任务，下述评论文本:{text}。类别是"
+            },
+            "tokenizer": {
+                "max_length": 128
+            }
+        },
+        "clean_data": false
+    },
+    "test_dataset_args": {
+        "data_type": "text",
+        "label_col": "labels",
+        "feature_col": "text",
+        "preprocess": {
+            "transforms": {
+                "PromptTemplate": "在做评论文本主题分类任务，下述评论文本:{comment_text}{photo_caption}{photo_ocr}。类别是"
+            },
+            "tokenizer": {
+                "max_length": 128
+            }
+        },
+        "clean_data": false
+    },
+    "platform_args": {
+        "n_gpu": 1,
+        "user_name": "zuohao",
+        "torch_version": 2.4,
+        "gpu_type": "V100",
+        "task_name": {
+            "scene": 0,
+            "direction": 0,
+            "ability": 0,
+            "custom": "multimodal_politics_v1_1"
+        },
+        "debug_mode":true
+    },
+    "model_configs": {
+        "base_model_id": "hf:Qwen/Qwen3-0.6B",
+        "problem_type": "multi_label_classification",
+        "num_labels": 25,
+        "use_safetensors":true,
+        "pad_token_id": 151643,
+        "neft_noise_alpha": 5.0
+    },
+    "Qwen3_0.6B": {
+    "deployArgs": "--dtype bfloat16 --max-model-len 4096 --tensor-parallel-size 1 --kv-cache-dtype auto --gpu-memory-utilization 0.8 --max-num-seqs 8192 --max-num-batched-tokens 1048576 --task classify --disable-log-requests --override-pooler-config '{\\\"pooling_type\\\": \\\"LAST\\\", \\\"normalize\\\": false, \\\"softmax\\\": false, \\\"sigmoid\\\": true}'",
+    "deployFrameworkImage": "registry.corp.kuaishou.com/ksp/public/private_clouds/llm-inference-vllm:1.0.217-vllm_support_rc_llm_pooling_dev-c"
+  }
+}
