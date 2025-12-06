@@ -566,10 +566,13 @@ def process_single_dataset(
                 }
                 preview = {
                     "artifact": artifact,
-                    "sample_full": sample,
-                    "ocr_tokens": extra.get("ocr_tokens", []),
+                    "sample_full": {**sample, "extra": {k: v for k, v in extra.items() if k != "ocr_tokens"}},
+                    "ocr_tokens_count": len(extra.get("ocr_tokens", [])),
                     "captions": extra.get("captions", []),
                 }
+                # OCR 内容已用于 pseudo_text，生成后清空以节省空间
+                if "ocr_tokens" in extra:
+                    extra["ocr_tokens"] = []
                 return {"artifact": artifact, "preview": preview}
         except Exception as e:
             print(f"Warning: Failed to process sample {idx} from {root}: {e}")
