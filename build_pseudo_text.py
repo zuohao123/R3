@@ -66,6 +66,11 @@ def resolve_model_path(
     Resolve model weights location. If provider=modelscope, download via modelscope snapshot_download
     so weights stay in本地缓存; otherwise fallback to Hugging Face.
     """
+    # Fast path: explicit local directory
+    local_path = Path(model_name).expanduser()
+    if local_path.exists():
+        return local_path.as_posix()
+
     def _find_hf_cached_snapshot(name: str, cache: Path) -> Optional[str]:
         base = cache / f"models--{name.replace('/', '--')}"
         snapshots_dir = base / "snapshots"
