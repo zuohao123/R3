@@ -4,9 +4,10 @@ Utility script to generate pseudo-text corpora when datasets lack OCR/caption fi
 from __future__ import annotations
 
 import argparse
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional
-import time
 
 import torch
 from PIL import Image
@@ -25,6 +26,11 @@ try:
     import pytesseract
 except ImportError:  # pragma: no cover
     pytesseract = None
+
+try:
+    import requests  # type: ignore
+except Exception:  # pragma: no cover
+    requests = None
 
 
 def run_ocr(image_path: str) -> List[Dict]:
@@ -310,6 +316,46 @@ def build_captions(
     return general_infer
 
 
+def build_caption_api_fn(
+    model_id: str,
+    api_token: Optional[str] = None,
+    base_url: str = "https://api-inference.huggingface.co/models",
+    timeout: int = 60,
+):
+    """
+    Return a caption function that calls a remote multimodal API (e.g., HF Inference API).
+    """
+    if requests is None:
+        raise ImportError("requests is required for caption_api_mode, please pip install requests.")
+    url = f"{base_url.rstrip('/')}/{model_id}"
+    headers = {"Authorization": f"Bearer {api_token}"} if api_token else {}
+
+    def infer(image_path: str) -> Optional[str]:
+        with open(image_path, "rb") as f:
+            data = f.read()
+        resp = requests.post(url, headers=headers, data=data, timeout=timeout)
+        resp.raise_for_status()
+        try:
+            payload = resp.json()
+            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                if "generated_text" in payload[0]:
+                    return payload[0]["generated_text"]
+                if "caption" in payload[0]:
+                    return payload[0]["caption"]
+            if isinstance(payload, dict):
+                for key in ("generated_text", "caption", "text", "answer"):
+                    if key in payload:
+                        val = payload[key]
+                        if isinstance(val, list):
+                            return val[0]
+                        return str(val)
+        except Exception:
+            pass
+        return resp.text.strip() if resp.text else None
+
+    return infer
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build pseudo-text corpus for PMC datasets.")
     parser.add_argument("--dataset_root", type=Path, help="Path to single dataset directory.")
@@ -329,6 +375,30 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Optional vision-language caption model (默认为空，不启用 caption 生成)。",
+    )
+    parser.add_argument(
+        "--caption_api_model",
+        type=str,
+        default=None,
+        help="可选：使用远程多模态 API（如 HF Inference API）的模型名，替代本地模型生成 caption。",
+    )
+    parser.add_argument(
+        "--caption_api_token",
+        type=str,
+        default=None,
+        help="远程多模态 API token（如 HF Inference API 需要）。",
+    )
+    parser.add_argument(
+        "--caption_api_base",
+        type=str,
+        default="https://api-inference.huggingface.co/models",
+        help="远程 API 基础地址，默认使用 HF Inference API。",
+    )
+    parser.add_argument(
+        "--caption_api_timeout",
+        type=int,
+        default=60,
+        help="远程 API 请求超时时间（秒）。",
     )
     parser.add_argument("--default_conf", type=float, default=0.75)
     parser.add_argument(
@@ -372,6 +442,12 @@ def parse_args() -> argparse.Namespace:
         help="处理进度日志间隔（样本数）。",
     )
     parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=1,
+        help="并行处理样本的线程数（>1 启用线程池，适合 I/O 密集型 OCR/API Caption）。",
+    )
+    parser.add_argument(
         "--caption_max_new_tokens",
         type=int,
         default=32,
@@ -389,6 +465,7 @@ def process_single_dataset(
     enable_ocr: bool,
     limit: Optional[int] = None,
     log_interval: int = 500,
+    num_workers: int = 1,
 ) -> List[Dict]:
     """
     Process a single dataset and return pseudo-text artifacts.
@@ -405,12 +482,12 @@ def process_single_dataset(
     upper = min(len(dataset), limit) if limit else len(dataset)
     print(f"  总样本数: {upper}")
     start_time = time.time()
-    
-    for idx in range(upper):
+
+    def handle_idx(idx: int):
         try:
             sample = dataset[idx]
             extra = sample.setdefault("extra", {})
-            
+
             # Add OCR if enabled and missing
             if enable_ocr and not extra.get("ocr_tokens"):
                 if sample.get("image_path"):
@@ -418,7 +495,7 @@ def process_single_dataset(
                         extra["ocr_tokens"] = run_ocr(sample["image_path"])
                     except Exception as e:
                         print(f"Warning: OCR failed for {sample['id']}: {e}")
-            
+
             # Add caption if model provided
             if caption_fn and sample.get("image_path"):
                 try:
@@ -427,7 +504,7 @@ def process_single_dataset(
                         extra.setdefault("captions", []).append(caption)
                 except Exception as e:
                     print(f"Warning: Caption generation failed for {sample['id']}: {e}")
-            
+
             # 处理 MTVQA 视频内容
             if dataset_type == "mtvqa" and sample.get("video_path"):
                 try:
@@ -436,11 +513,11 @@ def process_single_dataset(
                     sample = process_mtvqa_video(sample, video_processor, caption_fn)
                 except Exception as e:
                     print(f"Warning: Video processing failed for {sample['id']}: {e}")
-            
+
             # Build pseudo-text entries
             entries = builder.build(sample)
             if entries:
-                artifacts.append({
+                return {
                     "doc_id": sample["id"],
                     "pseudo_text": entries,
                     "metadata": {
@@ -451,18 +528,40 @@ def process_single_dataset(
                         "dataset_type": dataset_type,
                         "dataset_root": str(root),
                     },
-                })
+                }
         except Exception as e:
             print(f"Warning: Failed to process sample {idx} from {root}: {e}")
-            continue
-        if log_interval and (idx + 1) % log_interval == 0:
-            elapsed = time.time() - start_time
-            done = idx + 1
-            rate = done / elapsed if elapsed > 0 else 0.0
-            remaining = upper - done
-            eta = remaining / rate if rate > 0 else float("inf")
-            pct = done / upper * 100 if upper else 0
-            print(f"  进度: {done}/{upper} ({pct:.1f}%) - {format_eta(eta)} - {rate:.1f} it/s")
+        return None
+
+    if num_workers and num_workers > 1:
+        with ThreadPoolExecutor(max_workers=num_workers) as ex:
+            futures = {ex.submit(handle_idx, idx): idx for idx in range(upper)}
+            done = 0
+            for fut in as_completed(futures):
+                res = fut.result()
+                if res:
+                    artifacts.append(res)
+                done += 1
+                if log_interval and done % log_interval == 0:
+                    elapsed = time.time() - start_time
+                    rate = done / elapsed if elapsed > 0 else 0.0
+                    remaining = upper - done
+                    eta = remaining / rate if rate > 0 else float("inf")
+                    pct = done / upper * 100 if upper else 0
+                    print(f"  进度: {done}/{upper} ({pct:.1f}%) - {format_eta(eta)} - {rate:.1f} it/s")
+    else:
+        for idx in range(upper):
+            res = handle_idx(idx)
+            if res:
+                artifacts.append(res)
+            if log_interval and (idx + 1) % log_interval == 0:
+                elapsed = time.time() - start_time
+                done = idx + 1
+                rate = done / elapsed if elapsed > 0 else 0.0
+                remaining = upper - done
+                eta = remaining / rate if rate > 0 else float("inf")
+                pct = done / upper * 100 if upper else 0
+                print(f"  进度: {done}/{upper} ({pct:.1f}%) - {format_eta(eta)} - {rate:.1f} it/s")
     
     total_elapsed = time.time() - start_time
     print(f"Processed {len(artifacts)} samples from {root} in {total_elapsed/60:.1f} min")
@@ -512,7 +611,19 @@ def main() -> None:
     config = PseudoTextBuilderConfig(default_conf=args.default_conf)
     builder = PseudoTextBuilder(config=config)
     caption_fn = None
-    if args.caption_model:
+    if args.caption_api_model:
+        try:
+            caption_fn = build_caption_api_fn(
+                model_id=args.caption_api_model,
+                api_token=args.caption_api_token,
+                base_url=args.caption_api_base,
+                timeout=args.caption_api_timeout,
+            )
+            print(f"已启用远程 caption API: {args.caption_api_base.rstrip('/')}/{args.caption_api_model}")
+        except Exception as e:
+            print(f"警告: 远程 caption API 初始化失败: {e}")
+            caption_fn = None
+    elif args.caption_model:
         try:
             caption_fn = build_captions(
                 args.caption_model,
@@ -552,6 +663,7 @@ def main() -> None:
             args.enable_ocr,
             args.limit,
             args.log_interval,
+            args.num_workers,
         )
         all_artifacts.extend(artifacts)
     
