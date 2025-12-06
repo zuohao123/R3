@@ -343,10 +343,11 @@ def ingest_hf_dataset(
     hf_token: Optional[str],
     hf_cache: Optional[Path],
     num_proc: int = 4,
+    hf_config: Optional[str] = None,
 ) -> None:
     if load_dataset is None:
         raise ImportError("datasets 库未安装，无法直接读取 HuggingFace 数据集")
-    ds_dict = load_dataset(hf_repo, cache_dir=hf_cache, token=hf_token)
+    ds_dict = load_dataset(hf_repo, hf_config, cache_dir=hf_cache, token=hf_token)
     split_map: Dict[str, List[str]] = cfg.get("hf_split_map", {})
     target_root.mkdir(parents=True, exist_ok=True)
     for split, aliases in split_map.items():
@@ -435,10 +436,16 @@ def stage_dataset(
     target_root.mkdir(parents=True, exist_ok=True)
     # HuggingFace-native ingestion (parquet → json + images)
     if cfg.get("hf_repo"):
-        hf_repo = repo_id or cfg["hf_repo"]
+        hf_repo_full = repo_id or cfg["hf_repo"]
+        hf_repo = hf_repo_full
+        hf_config = cfg.get("hf_config")
+        if hf_repo_full and ":" in hf_repo_full:
+            hf_repo, hf_config_override = hf_repo_full.split(":", 1)
+            hf_config = hf_config_override or hf_config
         if load_dataset is None:
             raise ImportError("请先安装 datasets 库: pip install datasets")
-        print(f"[{name}] Loading HuggingFace dataset {hf_repo} ...")
+        log_repo = hf_repo if not hf_config else f"{hf_repo}:{hf_config}"
+        print(f"[{name}] Loading HuggingFace dataset {log_repo} ...")
         ingest_hf_dataset(
             name=cfg.get("canonical", name),
             cfg=cfg,
@@ -447,6 +454,7 @@ def stage_dataset(
             hf_token=hf_token,
             hf_cache=hf_cache,
             num_proc=num_proc,
+            hf_config=hf_config,
         )
         return
 
