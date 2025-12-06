@@ -482,6 +482,7 @@ def process_single_dataset(
     upper = min(len(dataset), limit) if limit else len(dataset)
     print(f"  总样本数: {upper}")
     start_time = time.time()
+    sample_preview: Optional[Dict] = None
 
     def handle_idx(idx: int):
         try:
@@ -533,6 +534,21 @@ def process_single_dataset(
             print(f"Warning: Failed to process sample {idx} from {root}: {e}")
         return None
 
+    def log_progress(done: int):
+        elapsed = time.time() - start_time
+        rate = done / elapsed if elapsed > 0 else 0.0
+        remaining = upper - done
+        eta = remaining / rate if rate > 0 else float("inf")
+        pct = done / upper * 100 if upper else 0
+        preview_txt = ""
+        if sample_preview:
+            pt = sample_preview.get("pseudo_text") or []
+            snippet = pt[0] if pt else ""
+            if isinstance(snippet, str) and len(snippet) > 80:
+                snippet = snippet[:80] + "..."
+            preview_txt = f" | 示例: {sample_preview.get('doc_id')} -> {snippet}"
+        print(f"  进度: {done}/{upper} ({pct:.1f}%) - {format_eta(eta)} - {rate:.1f} it/s{preview_txt}")
+
     if num_workers and num_workers > 1:
         with ThreadPoolExecutor(max_workers=num_workers) as ex:
             futures = {ex.submit(handle_idx, idx): idx for idx in range(upper)}
@@ -541,27 +557,18 @@ def process_single_dataset(
                 res = fut.result()
                 if res:
                     artifacts.append(res)
+                    sample_preview = res
                 done += 1
                 if log_interval and done % log_interval == 0:
-                    elapsed = time.time() - start_time
-                    rate = done / elapsed if elapsed > 0 else 0.0
-                    remaining = upper - done
-                    eta = remaining / rate if rate > 0 else float("inf")
-                    pct = done / upper * 100 if upper else 0
-                    print(f"  进度: {done}/{upper} ({pct:.1f}%) - {format_eta(eta)} - {rate:.1f} it/s")
+                    log_progress(done)
     else:
         for idx in range(upper):
             res = handle_idx(idx)
             if res:
                 artifacts.append(res)
+                sample_preview = res
             if log_interval and (idx + 1) % log_interval == 0:
-                elapsed = time.time() - start_time
-                done = idx + 1
-                rate = done / elapsed if elapsed > 0 else 0.0
-                remaining = upper - done
-                eta = remaining / rate if rate > 0 else float("inf")
-                pct = done / upper * 100 if upper else 0
-                print(f"  进度: {done}/{upper} ({pct:.1f}%) - {format_eta(eta)} - {rate:.1f} it/s")
+                log_progress(idx + 1)
     
     total_elapsed = time.time() - start_time
     print(f"Processed {len(artifacts)} samples from {root} in {total_elapsed/60:.1f} min")
