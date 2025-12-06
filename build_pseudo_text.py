@@ -28,17 +28,50 @@ except ImportError:  # pragma: no cover
     pytesseract = None
 
 try:
+    from paddleocr import PaddleOCR  # type: ignore
+except Exception:  # pragma: no cover
+    PaddleOCR = None
+
+try:
     import requests  # type: ignore
 except Exception:  # pragma: no cover
     requests = None
 
+# Lazy-initialized OCR engine (PaddleOCR preferred)
+_paddle_ocr = None  # type: ignore
+
 
 def run_ocr(image_path: str) -> List[Dict]:
-    # 使用 pytesseract 获得最基础的 OCR token，保证没有 OCR 标注的样本也能构建伪文本
+    """
+    Prefer PaddleOCR (更强鲁棒性); fallback to pytesseract.
+    """
+    global _paddle_ocr
+
+    if PaddleOCR is not None:
+        if _paddle_ocr is None:
+            # use_angle_cls: 旋转检测; lang 可按需改为 'ch', 'en', 'en_ppocrv4' 等
+            _paddle_ocr = PaddleOCR(use_angle_cls=True, lang="en")
+        result = _paddle_ocr.ocr(image_path, cls=True)
+        tokens: List[Dict] = []
+        for line in result or []:
+            for box, txt, score in line:
+                xs, ys = zip(*box)
+                bbox = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
+                tokens.append(
+                    {
+                        "text": txt,
+                        "bbox": bbox,
+                        "conf": float(score),
+                        "src": "ocr_paddle",
+                    }
+                )
+        return tokens
+
+    # Fallback to pytesseract
     if pytesseract is None:
-        raise ImportError("pytesseract is required for OCR-based pseudo-text generation.")
+        raise ImportError("pytesseract 或 paddleocr 未安装，无法生成 OCR 文本。")
     image = Image.open(image_path).convert("RGB")
-    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, config="--oem 1 --psm 6")
     tokens: List[Dict] = []
     for idx, text in enumerate(data["text"]):
         span = text.strip()
@@ -56,7 +89,7 @@ def run_ocr(image_path: str) -> List[Dict]:
                 "text": span,
                 "bbox": bbox,
                 "conf": conf / 100.0,
-                "src": "ocr",
+                "src": "ocr_tesseract",
             }
         )
     return tokens
