@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import Dict, List, Optional
+import time
 
 import torch
 from PIL import Image
@@ -53,6 +54,17 @@ def run_ocr(image_path: str) -> List[Dict]:
             }
         )
     return tokens
+
+
+def format_eta(seconds: float) -> str:
+    if seconds == float("inf"):
+        return "ETA ?:??"
+    seconds = max(0, int(seconds))
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"ETA {h:02d}:{m:02d}:{s:02d}"
+    return f"ETA {m:02d}:{s:02d}"
 
 
 def resolve_model_path(
@@ -391,6 +403,8 @@ def process_single_dataset(
     
     artifacts = []
     upper = min(len(dataset), limit) if limit else len(dataset)
+    print(f"  总样本数: {upper}")
+    start_time = time.time()
     
     for idx in range(upper):
         try:
@@ -442,9 +456,16 @@ def process_single_dataset(
             print(f"Warning: Failed to process sample {idx} from {root}: {e}")
             continue
         if log_interval and (idx + 1) % log_interval == 0:
-            print(f"  进度: {idx+1}/{upper} 样本已处理")
+            elapsed = time.time() - start_time
+            done = idx + 1
+            rate = done / elapsed if elapsed > 0 else 0.0
+            remaining = upper - done
+            eta = remaining / rate if rate > 0 else float("inf")
+            pct = done / upper * 100 if upper else 0
+            print(f"  进度: {done}/{upper} ({pct:.1f}%) - {format_eta(eta)} - {rate:.1f} it/s")
     
-    print(f"Processed {len(artifacts)} samples from {root}")
+    total_elapsed = time.time() - start_time
+    print(f"Processed {len(artifacts)} samples from {root} in {total_elapsed/60:.1f} min")
     return artifacts
 
 
