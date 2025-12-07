@@ -18,8 +18,8 @@ dataset:
       apply_corruption: false
   eval_split: val
   batch_size: 1          # per-GPU batch，小显存下更稳
- num_workers: 2
- pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
+  num_workers: 2
+  pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
 model:
   name: ./models/Qwen3-VL-8B-Instruct   # 使用 8B 以追求 SOTA，需确保本地权重在此路径
   lora_rank: 8                # 降低 LoRA 尺寸以进一步节省显存
