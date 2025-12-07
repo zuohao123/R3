@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 import logging
 import json
+import random
 from PIL import Image
 import torch
 import torch.nn.functional as F
@@ -144,6 +145,31 @@ def collate_fn(batch: List[Dict]) -> Dict:
         "hidden_size": batch[0]["corrupted"].get("hidden_size"),
     }
     return {"ids": ids, "clean": clean, "corrupted": corrupted}
+
+
+class MultiTaskDataset(Dataset):
+    """
+    Simple random-mixing multi-task dataset.
+    Each __getitem__ ignores idx and samples one of the sub-datasets by weight.
+    """
+
+    def __init__(self, datasets: List[R3Dataset], weights: Optional[List[float]] = None) -> None:
+        self.datasets = datasets
+        if weights is None:
+            weights = [1.0] * len(datasets)
+        total = sum(weights)
+        self.probs = [w / total for w in weights]
+        self.lengths = [len(ds) for ds in datasets]
+
+    def __len__(self) -> int:
+        # approximate length: sum of sub-datasets
+        return sum(self.lengths)
+
+    def __getitem__(self, idx: int) -> Dict:
+        choice = random.choices(range(len(self.datasets)), weights=self.probs, k=1)[0]
+        ds = self.datasets[choice]
+        ridx = random.randint(0, len(ds) - 1)
+        return ds[ridx]
 
 
 class CurriculumScheduler(TrainerCallback):
@@ -344,29 +370,60 @@ def main() -> None:
     logging.info("Loading config from %s", args.config)
     cfg = load_yaml(args.config)  # 读取 YAML 配置
     dataset_section = cfg.get("dataset", {})
-    dataset_root = Path(dataset_section["root"])
-    split = dataset_section.get("split", "train")
-    dataset_type = dataset_section.get("type", "textvqa")
-    if dataset_type == "auto":
-        dataset_type = detect_dataset_type(dataset_root)
     pseudo_corpus = load_pseudo_corpus(dataset_section.get("pseudo_corpus"))
-    base_dataset = create_dataset(dataset_type, dataset_root, split=split)
-    logging.info(
-        "Dataset initialized: type=%s root=%s split=%s size=%d",
-        dataset_type,
-        dataset_root,
-        split,
-        len(base_dataset),
-    )
 
-    train_dataset = R3Dataset(
-        base_dataset,
-        vision_tokens=cfg["model"].get("vision_tokens", 16),
-        hidden_size=cfg["model"].get("hidden_size", 4096),
-        apply_corruption=True,
-        pseudo_builder=PseudoTextBuilder(),
-        pseudo_corpus=pseudo_corpus,
-    )
+    def build_single_dataset(section: Dict) -> R3Dataset:
+        ds_root = Path(section["root"])
+        ds_split = section.get("split", "train")
+        ds_type = section.get("type", "textvqa")
+        if ds_type == "auto":
+            ds_type = detect_dataset_type(ds_root)
+        base_ds = create_dataset(ds_type, ds_root, split=ds_split)
+        logging.info(
+            "Dataset initialized: type=%s root=%s split=%s size=%d",
+            ds_type,
+            ds_root,
+            ds_split,
+            len(base_ds),
+        )
+        # Corruption configs
+        apply_corr = section.get("apply_corruption", True)
+        pt_drop = section.get("pseudo_text_drop_prob", 0.3)
+        img_corr_cfg = section.get("image_corruption", {})
+        image_corruptor = ImageCorruptor(
+            ImageCorruptionConfig(
+                occlusion_prob=img_corr_cfg.get("occlusion_prob", 0.5),
+                occlusion_ratio=img_corr_cfg.get("occlusion_ratio", 0.25),
+                blur_prob=img_corr_cfg.get("blur_prob", 0.5),
+                blur_radius=img_corr_cfg.get("blur_radius", 3.0),
+            )
+        )
+        pseudo_text_corruptor = PseudoTextCorruptor(
+            PseudoTextCorruptionConfig(drop_prob=pt_drop)
+        )
+        return R3Dataset(
+            base_ds,
+            vision_tokens=cfg["model"].get("vision_tokens", 16),
+            hidden_size=cfg["model"].get("hidden_size", 4096),
+            apply_corruption=apply_corr,
+            pseudo_builder=PseudoTextBuilder(),
+            pseudo_corpus=pseudo_corpus,
+            image_corruptor=image_corruptor,
+            pseudo_text_corruptor=pseudo_text_corruptor,
+            pseudo_text_drop_prob=pt_drop,
+        )
+
+    multi_cfg = dataset_section.get("multi")
+    if multi_cfg:
+        datasets: List[R3Dataset] = []
+        weights: List[float] = []
+        for entry in multi_cfg:
+            datasets.append(build_single_dataset(entry))
+            weights.append(entry.get("weight", 1.0))
+        train_dataset = MultiTaskDataset(datasets, weights=weights)
+        logging.info("Multi-task dataset initialized with %d subsets", len(datasets))
+    else:
+        train_dataset = build_single_dataset(dataset_section)
 
     model_section = cfg.get("model", {})
     training_section = cfg.get("training", {})
@@ -388,6 +445,8 @@ def main() -> None:
         enable_consistency=model_section.get("enable_consistency", True),
         lambda_consistency=model_section.get("lambda_consistency", 0.3),
         top_k=model_section.get("top_k", 3),
+        retrieval_cache_path=model_section.get("retrieval_cache_path"),
+        retrieval_corpus_path=model_section.get("retrieval_corpus_path"),
     )
     model = R3Model(model_cfg)
     logging.info("Model initialized with backbone %s", model_cfg.model_name)

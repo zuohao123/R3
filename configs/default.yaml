@@ -1,13 +1,24 @@
 dataset:
-  root: ./data_pipeline/data/mp_docvqa
-  type: mp_docvqa   # {textvqa, mp_docvqa, infovqa, chartqa, docvqa, slidevqa, mtvqa, auto}
-  #
-  # https://huggingface.co/datasets/ByteDance/MTVQA/tree/main/data
-  # https://huggingface.co/datasets/WinKawaks/InfoVQA/tree/main/data
-  split: train
+  # Stage1 默认多任务干净训练：DocVQA / InfoVQA / ChartQA 按 4:3:3 采样
+  multi:
+    - root: ./data_pipeline/data/docvqa
+      type: docvqa
+      split: train
+      weight: 4
+      apply_corruption: false
+    - root: ./data_pipeline/data/infovqa
+      type: infovqa
+      split: train
+      weight: 3
+      apply_corruption: false
+    - root: ./data_pipeline/data/chartqa
+      type: chartqa
+      split: train
+      weight: 3
+      apply_corruption: false
   eval_split: val
   batch_size: 2
-  num_workers: 0
+  num_workers: 4
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
 model:
   name: Qwen/Qwen3-VL-8B-Instruct
@@ -20,12 +31,12 @@ model:
   revision: null
   local_files_only: false
   retrieval_corpus_path: ./artifacts/pseudo_text_all_train.jsonl
-  enable_corruption: true
-  enable_retrieval: true
+  enable_corruption: false   # Stage1 关；Stage2A/2B 改为 true
+  enable_retrieval: false    # Stage1 可关；Stage2A/2B 改为 true
   enable_prefix: true
   enable_memory: true
   enable_imputation: true
-  enable_consistency: true
+  enable_consistency: false  # Stage1 关；Stage2A/2B 改为 true 并调权重
   lambda_consistency: 0.3
   top_k: 3
 training:
