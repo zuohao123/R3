@@ -250,3 +250,15 @@ class R3Model(torch.nn.Module):
         if hidden_states is None:
             raise ValueError("Hidden states are required for consistency training.")
         return hidden_states[-1].mean(dim=1)
+
+    # Bridge gradient checkpointing calls from HF Trainer to the underlying backbone.
+    def gradient_checkpointing_enable(self, **kwargs):
+        if hasattr(self.base_vlm, "model") and hasattr(self.base_vlm.model, "gradient_checkpointing_enable"):
+            self.base_vlm.model.gradient_checkpointing_enable(**kwargs)
+        # ensure cache is off to avoid incompatibility with checkpointing
+        if hasattr(self.base_vlm, "model") and hasattr(self.base_vlm.model, "config"):
+            self.base_vlm.model.config.use_cache = False
+
+    def gradient_checkpointing_disable(self):
+        if hasattr(self.base_vlm, "model") and hasattr(self.base_vlm.model, "gradient_checkpointing_disable"):
+            self.base_vlm.model.gradient_checkpointing_disable()
