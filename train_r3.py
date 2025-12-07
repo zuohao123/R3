@@ -377,6 +377,7 @@ def main() -> None:
     cfg = load_yaml(args.config)  # 读取 YAML 配置
     dataset_section = cfg.get("dataset", {})
     pseudo_corpus = load_pseudo_corpus(dataset_section.get("pseudo_corpus"))
+    logging.info("Config loaded. Preparing datasets...")
 
     def build_single_dataset(section: Dict) -> R3Dataset:
         ds_root = Path(section["root"])
@@ -430,6 +431,7 @@ def main() -> None:
         logging.info("Multi-task dataset initialized with %d subsets", len(datasets))
     else:
         train_dataset = build_single_dataset(dataset_section)
+        logging.info("Single dataset initialized.")
 
     model_section = cfg.get("model", {})
     training_section = cfg.get("training", {})
@@ -455,6 +457,7 @@ def main() -> None:
         retrieval_cache_path=model_section.get("retrieval_cache_path"),
         retrieval_corpus_path=model_section.get("retrieval_corpus_path"),
     )
+    logging.info("Loading model: %s (provider=%s)", model_cfg.model_name, model_cfg.provider)
     model = R3Model(model_cfg)
     logging.info("Model initialized with backbone %s", model_cfg.model_name)
 
@@ -484,6 +487,7 @@ def main() -> None:
         data_collator=collate_fn,
         callbacks=[CurriculumScheduler()],
     )
+    logging.info("Starting training for %s epochs", training_args.num_train_epochs)
     trainer.train()
     logging.info("Training finished. Checkpoints at %s", args.output_dir)
 

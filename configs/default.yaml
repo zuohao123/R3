@@ -44,7 +44,7 @@ training:
   epochs: 1
   log_interval: 10
   fp16: true
-  grad_accum_steps: 4    # 有 4 卡时等效全局 batch = batch_size * 4 GPUs * grad_accum_steps
+  grad_accum_steps: 8    # 有 4 卡时等效全局 batch = batch_size * 4 GPUs * grad_accum_steps
   num_workers: 8
   learning_rate: 0.0002
   weight_decay: 0.05
