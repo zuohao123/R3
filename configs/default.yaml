@@ -21,15 +21,15 @@ dataset:
   num_workers: 4
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
 model:
-  name: Qwen/Qwen3-VL-8B-Instruct
+  name: ./models/Qwen3-VL-8B-Instruct   # 本地已下载模型路径
   lora_rank: 32
   lora_alpha: 16
   hidden_size: 4096
-  provider: modelscope  # 可切换为 modelscope huggingface
-  token: ms-0d4f55e3-62c7-4e90-832e-9f864f802305            # 私有模型可填 HF token 或魔搭 token
+  provider: huggingface  # 本地路径也用 huggingface provider
+  token: null            # 使用本地模型，不需要 token
   cache_dir: ./hf_cache
   revision: null
-  local_files_only: false
+  local_files_only: true
   retrieval_corpus_path: ./artifacts/pseudo_text_all_train.jsonl
   enable_corruption: false   # Stage1 关；Stage2A/2B 改为 true
   enable_retrieval: false    # Stage1 可关；Stage2A/2B 改为 true

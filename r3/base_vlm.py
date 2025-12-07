@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
+from pathlib import Path
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model
@@ -165,6 +166,10 @@ class BaseVLM(torch.nn.Module):
         return model
 
     def _prepare_model_source(self) -> str:
+        # If model_name is a local path, use it directly
+        local_path = Path(self.config.model_name)
+        if local_path.exists():
+            return str(local_path)
         if self.config.provider.lower() == "modelscope":
             try:
                 from modelscope import snapshot_download
@@ -176,7 +181,7 @@ class BaseVLM(torch.nn.Module):
                 model_id=self.config.model_name,
                 cache_dir=self.config.cache_dir,
                 revision=self.config.revision,
-                use_auth_token=self.config.token,
+                token=self.config.token,
             )
             return local_dir
         return self.config.model_name
