@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 from pathlib import Path
 from types import MethodType
+import torch.nn as nn
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
@@ -238,21 +239,47 @@ class BaseVLM(torch.nn.Module):
                             return sub
                     except Exception:
                         continue
+            # brute force: first embedding module
+            for _, sub in model.named_modules():
+                if isinstance(sub, nn.Embedding):
+                    return sub
             return None
 
         text_module = _find_text_module()
         if text_module is None:
+            # As a last resort, create a dummy getter that returns None to bypass NotImplementedError.
+            def _get_input_embeddings(_self):
+                return None
+
+            def _set_input_embeddings(_self, value):
+                return None
+
+            model.get_input_embeddings = MethodType(_get_input_embeddings, model)
+            model.set_input_embeddings = MethodType(_set_input_embeddings, model)
             return model
 
         def _get_input_embeddings(_self):
+            # If text_module is an embedding, return directly; else call its getter.
+            if isinstance(text_module, nn.Embedding):
+                return text_module
             return text_module.get_input_embeddings()
 
         def _set_input_embeddings(_self, value):
+            if isinstance(text_module, nn.Embedding):
+                return
             if hasattr(text_module, "set_input_embeddings"):
                 text_module.set_input_embeddings(value)
 
         model.get_input_embeddings = MethodType(_get_input_embeddings, model)
         model.set_input_embeddings = MethodType(_set_input_embeddings, model)
+
+        # Patch enable_input_require_grads to avoid calling a missing implementation.
+        def _enable_input_require_grads(_self):
+            embedding = _self.get_input_embeddings()
+            if embedding is not None:
+                embedding.requires_grad_(True)
+
+        model.enable_input_require_grads = MethodType(_enable_input_require_grads, model)
         return model
 
     def _prepare_model_source(self) -> str:
