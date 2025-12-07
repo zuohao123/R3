@@ -99,7 +99,9 @@ class BaseVLM(torch.nn.Module):
         # Qwen3-VL processor expects paired text; provide empty prompts to avoid NoneType errors.
         dummy_text = [""] * len(pil_images)
         inputs = self.processor(images=pil_images, text=dummy_text, return_tensors="pt")
-        pixel_values = inputs.get("pixel_values") or inputs.get("images")
+        pixel_values = inputs.get("pixel_values")
+        if pixel_values is None:
+            pixel_values = inputs.get("images")
         if pixel_values is None:
             raise ValueError("Processor did not return pixel_values for vision encoding.")
         pixel_values = pixel_values.to(device=device, dtype=self.model.dtype)
