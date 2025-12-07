@@ -205,7 +205,7 @@ class R3Trainer(Trainer):
     Custom Trainer that computes dual-branch loss inline.
     """
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         device = next(model.parameters()).device
         tokenizer = model.base_vlm.tokenizer
         max_length = getattr(model.config, "max_seq_length", 1024)
