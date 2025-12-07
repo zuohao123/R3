@@ -27,6 +27,9 @@ model:
   hidden_size: 4096
   bf16: false                 # V100 不支持 bf16
   vision_tokens: 8            # 缩短视觉 token 数以节省显存
+  load_in_4bit: false         # 关闭 4bit，使用 FP16
+  load_in_8bit: false
+  device_map: auto            # 单进程下自动切分到可见 GPU，实现模型并行
   provider: huggingface  # 本地路径也用 huggingface provider
   token: null            # 使用本地模型，不需要 token
   cache_dir: ./hf_cache
