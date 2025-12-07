@@ -326,6 +326,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output_dir", type=Path, default=Path("checkpoints/r3"))
     parser.add_argument("--log_level", type=str, default="INFO")
+    parser.add_argument("--log_file", type=Path, default=None, help="Optional path to save training logs.")
     return parser.parse_args()
 
 
@@ -363,9 +364,14 @@ def main() -> None:
     #
     # 多卡训练 (torchrun 自动启用 DDP):
     # torchrun --nproc_per_node=4 train_r3.py --config configs/default.yaml --device cuda --output_dir checkpoints/r3_lora
+    log_handlers = [logging.StreamHandler()]
+    if args.log_file:
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_handlers.append(logging.FileHandler(args.log_file, mode="w"))
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=log_handlers,
     )
     logging.info("Loading config from %s", args.config)
     cfg = load_yaml(args.config)  # 读取 YAML 配置
