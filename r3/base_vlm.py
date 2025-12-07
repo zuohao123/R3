@@ -111,13 +111,7 @@ class BaseVLM(torch.nn.Module):
         return vision_hidden
 
     def _forward_vision(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        vision_fn = None
-        if hasattr(self.model, "vision_model"):
-            vision_fn = self.model.vision_model
-        elif hasattr(self.model, "vision_tower"):
-            vision_fn = self.model.vision_tower
-        elif hasattr(self.model, "get_vision_tower"):
-            vision_fn = self.model.get_vision_tower()
+        vision_fn = self._locate_vision_module(self.model)
         if vision_fn is None:
             raise RuntimeError("Backbone does not expose a vision module; cannot encode images.")
         outputs = vision_fn(pixel_values)
@@ -129,6 +123,42 @@ class BaseVLM(torch.nn.Module):
         if hidden is None:
             raise RuntimeError("Vision module did not return hidden states.")
         return hidden
+
+    def _locate_vision_module(self, model):
+        """
+        Robustly find the vision tower, even when wrapped by PEFT/DDP.
+        """
+        candidates = [model]
+        for attr in ["base_model", "model"]:
+            sub = getattr(model, attr, None)
+            if sub is not None:
+                candidates.append(sub)
+        if hasattr(model, "get_base_model"):
+            try:
+                candidates.append(model.get_base_model())
+            except Exception:
+                pass
+
+        for m in candidates:
+            if hasattr(m, "vision_model"):
+                return m.vision_model
+            if hasattr(m, "vision_tower"):
+                vt = m.vision_tower
+                try:
+                    return vt() if callable(vt) else vt
+                except Exception:
+                    return vt
+            if hasattr(m, "get_vision_tower"):
+                try:
+                    return m.get_vision_tower()
+                except Exception:
+                    pass
+
+        for m in candidates:
+            for name, sub in m.named_children():
+                if "vision" in name:
+                    return sub
+        return None
 
     @staticmethod
     def _resize_tokens(feats: torch.Tensor, target_tokens: int) -> torch.Tensor:
