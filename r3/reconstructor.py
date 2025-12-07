@@ -27,6 +27,8 @@ class PrefixEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.gru = nn.GRU(config.hidden_size, config.hidden_size, batch_first=True)
+        # Avoid cuDNN flatten_parameters issues on some GPUs by disabling the flatten hook.
+        self.gru.flatten_parameters = lambda: None
 
     def forward(self, evidence_embeddings: torch.Tensor) -> torch.Tensor:
         if evidence_embeddings.numel() == 0:

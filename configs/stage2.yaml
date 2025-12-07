@@ -1,0 +1,80 @@
+dataset:
+  # Stage2 轻度 PMC：开启腐蚀/检索/一致性，轻度文本 drop
+  multi:
+    - root: ./data_pipeline/data/docvqa
+      type: docvqa
+      split: train
+      weight: 4
+      apply_corruption: true
+      pseudo_text_drop_prob: 0.1
+      image_corruption:
+        occlusion_prob: 0.4
+        occlusion_ratio: 0.2
+        blur_prob: 0.4
+        blur_radius: 3.0
+    - root: ./data_pipeline/data/infovqa
+      type: infovqa
+      split: train
+      weight: 3
+      apply_corruption: true
+      pseudo_text_drop_prob: 0.1
+      image_corruption:
+        occlusion_prob: 0.4
+        occlusion_ratio: 0.2
+        blur_prob: 0.4
+        blur_radius: 3.0
+    - root: ./data_pipeline/data/chartqa
+      type: chartqa
+      split: train
+      weight: 3
+      apply_corruption: true
+      pseudo_text_drop_prob: 0.1
+      image_corruption:
+        occlusion_prob: 0.4
+        occlusion_ratio: 0.2
+        blur_prob: 0.4
+        blur_radius: 3.0
+  eval_split: val
+  batch_size: 1
+  num_workers: 2
+  pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl
+model:
+  name: ./models/Qwen3-VL-8B-Instruct
+  lora_rank: 8
+  lora_alpha: 16
+  hidden_size: 4096
+  bf16: false
+  vision_tokens: 6
+  load_in_4bit: true
+  load_in_8bit: false
+  device_map: null           # torchrun 下设 null，避免重复切分
+  gradient_checkpointing: true
+  low_cpu_mem_usage: true
+  provider: huggingface
+  token: null
+  cache_dir: ./hf_cache
+  revision: null
+  local_files_only: true
+  retrieval_corpus_path: ./artifacts/pseudo_text_all_train.jsonl
+  enable_corruption: true
+  enable_retrieval: true
+  enable_prefix: true
+  enable_memory: true
+  enable_imputation: true
+  enable_consistency: true
+  lambda_consistency: 0.3
+  top_k: 3
+training:
+  epochs: 1
+  log_interval: 10
+  fp16: false
+  grad_accum_steps: 8
+  grad_checkpoint: true
+  num_workers: 2
+  learning_rate: 0.0002
+  weight_decay: 0.05
+  warmup_ratio: 0.05
+evaluation:
+  split: val
+  apply_corruption: true
+  batch_size: 2
