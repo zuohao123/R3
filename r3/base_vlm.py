@@ -164,10 +164,20 @@ class BaseVLM(torch.nn.Module):
         model = self._ensure_input_embeddings(model)
         # For k-bit (4/8bit) loading, prepare the model so LoRA can update inputs.
         if is_quantized:
-            model = prepare_model_for_kbit_training(
-                model,
-                use_gradient_checkpointing=self.config.gradient_checkpointing,
-            )
+            try:
+                model = prepare_model_for_kbit_training(
+                    model,
+                    use_gradient_checkpointing=self.config.gradient_checkpointing,
+                )
+            except NotImplementedError:
+                # Fallback: manually enable input grads + gradient checkpointing.
+                if self.config.gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
+                    model.gradient_checkpointing_enable()
+                    if hasattr(model, "enable_input_require_grads"):
+                        model.enable_input_require_grads()
+                embeddings = model.get_input_embeddings()
+                if embeddings is not None:
+                    embeddings.requires_grad_(True)
         lora_targets = [
             "q_proj",
             "k_proj",
@@ -192,25 +202,57 @@ class BaseVLM(torch.nn.Module):
     def _ensure_input_embeddings(self, model):
         """
         Some Vision2Seq wrappers (e.g., Qwen3-VL) do not expose get/set_input_embeddings
-        on the top module. This redirects to language_model if present so peft prep works.
+        on the top module. This redirects to a text submodule (language_model/model/transformer/etc.).
         """
+        # If already works, return fast.
         try:
             _ = model.get_input_embeddings()
             return model
-        except (AttributeError, NotImplementedError):
+        except Exception:
             pass
 
-        language_model = getattr(model, "language_model", None)
-        if language_model and hasattr(language_model, "get_input_embeddings"):
-            def _get_input_embeddings(_self):
-                return language_model.get_input_embeddings()
+        def _find_text_module():
+            candidates = [
+                getattr(model, "language_model", None),
+                getattr(model, "model", None),
+                getattr(model, "text_model", None),
+                getattr(model, "transformer", None),
+                getattr(model, "base_model", None),
+            ]
+            for cand in candidates:
+                if cand is None:
+                    continue
+                if hasattr(cand, "get_input_embeddings"):
+                    try:
+                        emb = cand.get_input_embeddings()
+                        if emb is not None:
+                            return cand
+                    except Exception:
+                        continue
+            # last resort: scan children
+            for _, sub in model.named_children():
+                if hasattr(sub, "get_input_embeddings"):
+                    try:
+                        emb = sub.get_input_embeddings()
+                        if emb is not None:
+                            return sub
+                    except Exception:
+                        continue
+            return None
 
-            def _set_input_embeddings(_self, value):
-                if hasattr(language_model, "set_input_embeddings"):
-                    language_model.set_input_embeddings(value)
+        text_module = _find_text_module()
+        if text_module is None:
+            return model
 
-            model.get_input_embeddings = MethodType(_get_input_embeddings, model)
-            model.set_input_embeddings = MethodType(_set_input_embeddings, model)
+        def _get_input_embeddings(_self):
+            return text_module.get_input_embeddings()
+
+        def _set_input_embeddings(_self, value):
+            if hasattr(text_module, "set_input_embeddings"):
+                text_module.set_input_embeddings(value)
+
+        model.get_input_embeddings = MethodType(_get_input_embeddings, model)
+        model.set_input_embeddings = MethodType(_set_input_embeddings, model)
         return model
 
     def _prepare_model_source(self) -> str:
