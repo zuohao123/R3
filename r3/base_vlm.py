@@ -96,7 +96,9 @@ class BaseVLM(torch.nn.Module):
         if self.processor is None:
             raise RuntimeError("No processor available for image encoding; ensure base model provides vision processor.")
         pil_images = [self._to_image(img) for img in images]
-        inputs = self.processor(images=pil_images, return_tensors="pt")
+        # Qwen3-VL processor expects paired text; provide empty prompts to avoid NoneType errors.
+        dummy_text = [""] * len(pil_images)
+        inputs = self.processor(images=pil_images, text=dummy_text, return_tensors="pt")
         pixel_values = inputs.get("pixel_values") or inputs.get("images")
         if pixel_values is None:
             raise ValueError("Processor did not return pixel_values for vision encoding.")
