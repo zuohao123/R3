@@ -206,17 +206,19 @@ class R3Trainer(Trainer):
     """
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        device = next(model.parameters()).device
-        tokenizer = model.base_vlm.tokenizer
-        max_length = getattr(model.config, "max_seq_length", 1024)
+        # Unwrap DDP for attribute access while keeping forward on the wrapped model.
+        base_model = model.module if hasattr(model, "module") else model
+        device = next(base_model.parameters()).device
+        tokenizer = base_model.base_vlm.tokenizer
+        max_length = getattr(base_model.config, "max_seq_length", 1024)
 
         clean_split = inputs["clean"]
         corrupted_split = inputs["corrupted"]
 
         clean_tokens, clean_pseudo = self._tokenize_branch(tokenizer, clean_split, max_length, device)
         corrupted_tokens, corrupted_pseudo = self._tokenize_branch(tokenizer, corrupted_split, max_length, device)
-        clean_vision = self._get_vision_embeddings(model, clean_split, device)
-        corrupted_vision = self._get_vision_embeddings(model, corrupted_split, device)
+        clean_vision = self._get_vision_embeddings(base_model, clean_split, device)
+        corrupted_vision = self._get_vision_embeddings(base_model, corrupted_split, device)
 
         with torch.no_grad():
             teacher_out = model(
