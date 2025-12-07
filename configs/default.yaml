@@ -17,15 +17,16 @@ dataset:
       weight: 3
       apply_corruption: false
   eval_split: val
-  batch_size: 1          # per-GPU batch，小显存下更稳，可配合梯度累积
-  num_workers: 8
+  batch_size: 1          # per-GPU batch，小显存下更稳
+  num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
 model:
   name: ./models/Qwen3-VL-8B-Instruct   # 使用 8B 以追求 SOTA，需确保本地权重在此路径
-  lora_rank: 32
+  lora_rank: 16           # 降低 LoRA 尺寸以节省显存
   lora_alpha: 16
   hidden_size: 4096
   bf16: false                 # V100 不支持 bf16
+  vision_tokens: 8            # 缩短视觉 token 数以节省显存
   provider: huggingface  # 本地路径也用 huggingface provider
   token: null            # 使用本地模型，不需要 token
   cache_dir: ./hf_cache
@@ -44,8 +45,8 @@ training:
   epochs: 1
   log_interval: 10
   fp16: true
-  grad_accum_steps: 8    # 有 4 卡时等效全局 batch = batch_size * 4 GPUs * grad_accum_steps
-  num_workers: 8
+  grad_accum_steps: 4    # 结合 batch=1、4卡，等效全局 batch≈16
+  num_workers: 2
   learning_rate: 0.0002
   weight_decay: 0.05
   warmup_ratio: 0.05
