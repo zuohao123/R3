@@ -22,11 +22,11 @@ dataset:
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
 model:
   name: ./models/Qwen3-VL-8B-Instruct   # 使用 8B 以追求 SOTA，需确保本地权重在此路径
-  lora_rank: 16           # 降低 LoRA 尺寸以节省显存
+  lora_rank: 16
   lora_alpha: 16
   hidden_size: 4096
   bf16: false                 # V100 不支持 bf16
-  vision_tokens: 8            # 缩短视觉 token 数以节省显存
+  vision_tokens: 8
   load_in_4bit: false         # 关闭 4bit，使用 FP16
   load_in_8bit: false
   device_map: auto            # 单进程下自动切分到可见 GPU，实现模型并行
