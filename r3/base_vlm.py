@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 from pathlib import Path
+from types import MethodType
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
@@ -160,6 +161,7 @@ class BaseVLM(torch.nn.Module):
         return Image.open(str(img)).convert("RGB")
 
     def _apply_lora(self, model, is_quantized: bool = False):
+        model = self._ensure_input_embeddings(model)
         # For k-bit (4/8bit) loading, prepare the model so LoRA can update inputs.
         if is_quantized:
             model = prepare_model_for_kbit_training(
@@ -185,6 +187,30 @@ class BaseVLM(torch.nn.Module):
         )
         model = get_peft_model(model, lora_config)
         model.resize_token_embeddings(len(self.tokenizer))
+        return model
+
+    def _ensure_input_embeddings(self, model):
+        """
+        Some Vision2Seq wrappers (e.g., Qwen3-VL) do not expose get/set_input_embeddings
+        on the top module. This redirects to language_model if present so peft prep works.
+        """
+        try:
+            _ = model.get_input_embeddings()
+            return model
+        except (AttributeError, NotImplementedError):
+            pass
+
+        language_model = getattr(model, "language_model", None)
+        if language_model and hasattr(language_model, "get_input_embeddings"):
+            def _get_input_embeddings(_self):
+                return language_model.get_input_embeddings()
+
+            def _set_input_embeddings(_self, value):
+                if hasattr(language_model, "set_input_embeddings"):
+                    language_model.set_input_embeddings(value)
+
+            model.get_input_embeddings = MethodType(_get_input_embeddings, model)
+            model.set_input_embeddings = MethodType(_set_input_embeddings, model)
         return model
 
     def _prepare_model_source(self) -> str:
