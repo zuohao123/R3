@@ -22,6 +22,11 @@ class R3ModelConfig:
     hidden_size: int = 4096
     max_seq_length: int = 1024
     bf16: bool = True
+    load_in_4bit: bool = False
+    load_in_8bit: bool = False
+    device_map: Optional[str | Dict] = None
+    low_cpu_mem_usage: bool = True
+    gradient_checkpointing: bool = True
     provider: str = "huggingface"
     token: Optional[str] = None
     cache_dir: Optional[str] = None
@@ -53,6 +58,11 @@ class R3Model(torch.nn.Module):
                 lora_rank=config.lora_rank,
                 lora_alpha=config.lora_alpha,
                 bf16=config.bf16,
+                load_in_4bit=config.load_in_4bit,
+                load_in_8bit=config.load_in_8bit,
+                device_map=config.device_map,
+                low_cpu_mem_usage=config.low_cpu_mem_usage,
+                gradient_checkpointing=config.gradient_checkpointing,
                 provider=config.provider,
                 token=config.token,
                 cache_dir=config.cache_dir,

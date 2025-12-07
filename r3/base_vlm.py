@@ -3,12 +3,13 @@ Base VLM wrapper around Qwen3-VL style backbones.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 from pathlib import Path
 
 import torch
-from peft import LoraConfig, PeftModel, get_peft_model
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from PIL import Image
 from transformers import (
     AutoConfig,
@@ -16,6 +17,7 @@ from transformers import (
     AutoModelForVision2Seq,
     AutoProcessor,
     AutoTokenizer,
+    BitsAndBytesConfig,
 )
 
 
@@ -25,6 +27,11 @@ class BaseVLMConfig:
     lora_rank: int = 32
     lora_alpha: int = 16
     bf16: bool = True
+    load_in_4bit: bool = False
+    load_in_8bit: bool = False
+    device_map: Optional[str | Dict] = None
+    low_cpu_mem_usage: bool = True
+    gradient_checkpointing: bool = True
     tokenizer_path: Optional[str] = None
     adapter_path: Optional[str] = None
     provider: str = "huggingface"  # or "modelscope"
@@ -50,10 +57,19 @@ class BaseVLM(torch.nn.Module):
         torch_dtype = torch.bfloat16 if config.bf16 else torch.float16
         config_obj = AutoConfig.from_pretrained(model_path, **hf_kwargs)
         backbone = self._load_backbone(model_path, config_obj, torch_dtype, hf_kwargs)
+
+        is_quantized = config.load_in_4bit or config.load_in_8bit
+
+        # Enable gradient checkpointing before wrapping with LoRA to lower peak memory.
+        if config.gradient_checkpointing and not is_quantized and hasattr(backbone, "gradient_checkpointing_enable"):
+            backbone.gradient_checkpointing_enable()
+            if hasattr(backbone, "enable_input_require_grads"):
+                backbone.enable_input_require_grads()
+
         if config.adapter_path:
             self.model = PeftModel.from_pretrained(backbone, config.adapter_path)
         else:
-            self.model = self._apply_lora(backbone)
+            self.model = self._apply_lora(backbone, is_quantized=is_quantized)
 
     def forward(self, inputs_embeds, attention_mask, labels):
         return self.model(
@@ -143,7 +159,13 @@ class BaseVLM(torch.nn.Module):
             raise ValueError("Unsupported tensor shape for image conversion.")
         return Image.open(str(img)).convert("RGB")
 
-    def _apply_lora(self, model):
+    def _apply_lora(self, model, is_quantized: bool = False):
+        # For k-bit (4/8bit) loading, prepare the model so LoRA can update inputs.
+        if is_quantized:
+            model = prepare_model_for_kbit_training(
+                model,
+                use_gradient_checkpointing=self.config.gradient_checkpointing,
+            )
         lora_targets = [
             "q_proj",
             "k_proj",
@@ -198,15 +220,40 @@ class BaseVLM(torch.nn.Module):
         return kwargs
 
     def _load_backbone(self, model_path, config_obj, torch_dtype, hf_kwargs):
+        bnb_config = None
+        if self.config.load_in_4bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            )
+        elif self.config.load_in_8bit:
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+
+        # Respect torchrun local rank to avoid sharding the model across all GPUs in each process.
+        device_map = self.config.device_map
+        local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+        if local_rank >= 0 and device_map == "auto":
+            device_map = {"": local_rank}
+
+        common_kwargs = {
+            "torch_dtype": torch_dtype,
+            "device_map": device_map,
+            "low_cpu_mem_usage": self.config.low_cpu_mem_usage,
+        }
+        if bnb_config is not None:
+            common_kwargs["quantization_config"] = bnb_config
+
         multimodal_types = {"qwen2_vl", "qwen2_5_vl", "qwen3_vl"}
         if getattr(config_obj, "model_type", None) in multimodal_types:
             return AutoModelForVision2Seq.from_pretrained(
                 model_path,
-                torch_dtype=torch_dtype,
+                **common_kwargs,
                 **hf_kwargs,
             )
         return AutoModelForCausalLM.from_pretrained(
             model_path,
-            torch_dtype=torch_dtype,
+            **common_kwargs,
             **hf_kwargs,
         )

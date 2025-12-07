@@ -441,6 +441,11 @@ def main() -> None:
         lora_alpha=model_section.get("lora_alpha", 16),
         hidden_size=model_section.get("hidden_size", 4096),
         bf16=model_section.get("bf16", True),
+        load_in_4bit=model_section.get("load_in_4bit", False),
+        load_in_8bit=model_section.get("load_in_8bit", False),
+        device_map=model_section.get("device_map"),
+        low_cpu_mem_usage=model_section.get("low_cpu_mem_usage", True),
+        gradient_checkpointing=model_section.get("gradient_checkpointing", True),
         provider=model_section.get("provider", "huggingface"),
         token=model_section.get("token"),
         cache_dir=model_section.get("cache_dir"),
@@ -460,6 +465,8 @@ def main() -> None:
     logging.info("Loading model: %s (provider=%s)", model_cfg.model_name, model_cfg.provider)
     model = R3Model(model_cfg)
     logging.info("Model initialized with backbone %s", model_cfg.model_name)
+    if hasattr(model, "base_vlm") and hasattr(model.base_vlm, "model") and hasattr(model.base_vlm.model, "config"):
+        model.base_vlm.model.config.use_cache = False
 
     ddp = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     training_args = TrainingArguments(
@@ -475,6 +482,7 @@ def main() -> None:
         remove_unused_columns=False,
         bf16=model_cfg.bf16 and torch.cuda.is_available(),
         fp16=training_section.get("fp16", False) and torch.cuda.is_available(),
+        gradient_checkpointing=training_section.get("grad_checkpoint", True),
         dataloader_num_workers=training_section.get("num_workers", 0),
         ddp_find_unused_parameters=False if ddp else None,
         ddp_backend="nccl" if ddp else None,

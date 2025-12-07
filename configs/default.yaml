@@ -29,7 +29,9 @@ model:
   vision_tokens: 6
   load_in_4bit: true          # 启用 4bit 量化，显著降低显存
   load_in_8bit: false
-  device_map: auto            # 单进程下自动切分到可见 GPU，实现模型并行
+  device_map: auto            # 单进程下自动切分到可见 GPU，实现模型并行；多卡 DDP 时改为 null
+  gradient_checkpointing: true
+  low_cpu_mem_usage: true
   provider: huggingface  # 本地路径也用 huggingface provider
   token: null            # 使用本地模型，不需要 token
   cache_dir: ./hf_cache
@@ -49,6 +51,7 @@ training:
   log_interval: 10
   fp16: false            # 量化时关闭 fp16
   grad_accum_steps: 8    # 增大累积步，进一步降低显存峰值
+  grad_checkpoint: true  # 进一步降低显存
   num_workers: 2
   learning_rate: 0.0002
   weight_decay: 0.05
