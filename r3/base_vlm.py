@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Sequence
 from pathlib import Path
 
 import torch
-from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, PeftModel, get_peft_model
 from PIL import Image
 from transformers import (
     AutoConfig,
@@ -16,12 +16,6 @@ from transformers import (
     AutoModelForVision2Seq,
     AutoProcessor,
     AutoTokenizer,
-)
-
-try:
-    from transformers import BitsAndBytesConfig  # type: ignore
-except Exception:  # pragma: no cover
-    BitsAndBytesConfig = None
 )
 
 
@@ -38,9 +32,6 @@ class BaseVLMConfig:
     cache_dir: Optional[str] = None
     revision: Optional[str] = None
     local_files_only: bool = False
-    load_in_4bit: bool = False
-    load_in_8bit: bool = False
-    device_map: Optional[str] = None
 
 
 class BaseVLM(torch.nn.Module):
@@ -56,9 +47,7 @@ class BaseVLM(torch.nn.Module):
             self.processor = AutoProcessor.from_pretrained(tokenizer_source, **hf_kwargs)
         except Exception:
             self.processor = None
-        torch_dtype = None
-        if not (self.config.load_in_4bit or self.config.load_in_8bit):
-            torch_dtype = torch.bfloat16 if config.bf16 else torch.float16
+        torch_dtype = torch.bfloat16 if config.bf16 else torch.float16
         config_obj = AutoConfig.from_pretrained(model_path, **hf_kwargs)
         backbone = self._load_backbone(model_path, config_obj, torch_dtype, hf_kwargs)
         if config.adapter_path:
@@ -155,9 +144,6 @@ class BaseVLM(torch.nn.Module):
         return Image.open(str(img)).convert("RGB")
 
     def _apply_lora(self, model):
-        # For k-bit training, prepare first
-        if getattr(self.config, "load_in_4bit", False) or getattr(self.config, "load_in_8bit", False):
-            model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
         lora_targets = [
             "q_proj",
             "k_proj",
@@ -209,23 +195,6 @@ class BaseVLM(torch.nn.Module):
             kwargs["revision"] = self.config.revision
         if self.config.token:
             kwargs["token"] = self.config.token
-        if self.config.device_map:
-            kwargs["device_map"] = self.config.device_map
-        if (self.config.load_in_4bit or self.config.load_in_8bit) and BitsAndBytesConfig is None:
-            raise ImportError("需要 bitsandbytes 才能使用 4bit/8bit 量化，请先安装 bitsandbytes。")
-        if self.config.load_in_4bit:
-            kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
-        elif self.config.load_in_8bit:
-            kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_8bit=True,
-                llm_int8_threshold=6.0,
-                llm_int8_has_fp16_weight=False,
-            )
         return kwargs
 
     def _load_backbone(self, model_path, config_obj, torch_dtype, hf_kwargs):
@@ -234,12 +203,10 @@ class BaseVLM(torch.nn.Module):
             return AutoModelForVision2Seq.from_pretrained(
                 model_path,
                 torch_dtype=torch_dtype,
-                device_map=self.config.device_map if self.config.load_in_4bit or self.config.load_in_8bit else None,
                 **hf_kwargs,
             )
         return AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch_dtype,
-            device_map=self.config.device_map if self.config.load_in_4bit or self.config.load_in_8bit else None,
             **hf_kwargs,
         )
