@@ -165,17 +165,20 @@ class BaseVLM(torch.nn.Module):
         model = self._ensure_input_embeddings(model)
         # For k-bit (4/8bit) loading, prepare the model so LoRA can update inputs.
         if is_quantized:
-            try:
-                model = prepare_model_for_kbit_training(
-                    model,
-                    use_gradient_checkpointing=self.config.gradient_checkpointing,
-                )
-            except NotImplementedError:
-                # Fallback: manually enable input grads + gradient checkpointing.
+            model_type = getattr(getattr(model, "config", None), "model_type", "") or model.__class__.__name__.lower()
+            skip_bnb_prepare = any(tag in str(model_type).lower() for tag in ["qwen3_vl", "qwen2_vl", "qwen2_5_vl"])
+            if not skip_bnb_prepare:
+                try:
+                    model = prepare_model_for_kbit_training(
+                        model,
+                        use_gradient_checkpointing=self.config.gradient_checkpointing,
+                    )
+                except NotImplementedError:
+                    skip_bnb_prepare = True
+            if skip_bnb_prepare:
+                # Manual fallback: only do the minimum needed for LoRA on k-bit models.
                 if self.config.gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
                     model.gradient_checkpointing_enable()
-                    if hasattr(model, "enable_input_require_grads"):
-                        model.enable_input_require_grads()
                 embeddings = model.get_input_embeddings()
                 if embeddings is not None:
                     embeddings.requires_grad_(True)
