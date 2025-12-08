@@ -126,12 +126,16 @@ class BaseVLM(torch.nn.Module):
         except TypeError:
             outputs = vision_fn(pixel_values)
         if isinstance(outputs, torch.Tensor):
-            return outputs
-        hidden = getattr(outputs, "last_hidden_state", None)
-        if hidden is None and isinstance(outputs, (tuple, list)) and outputs:
-            hidden = outputs[0]
+            hidden = outputs
+        else:
+            hidden = getattr(outputs, "last_hidden_state", None)
+            if hidden is None and isinstance(outputs, (tuple, list)) and outputs:
+                hidden = outputs[0]
         if hidden is None:
             raise RuntimeError("Vision module did not return hidden states.")
+        if hidden.dim() == 2:
+            # Some towers return (tokens, dim) without batch; add batch dim.
+            hidden = hidden.unsqueeze(0)
         return hidden
 
     def _locate_vision_module(self, model):
