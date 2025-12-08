@@ -276,7 +276,7 @@ class R3Trainer(Trainer):
         elif labels.size(1) > seq_len:
             labels = labels[:, :seq_len]
         # Shift: predict token t using logits at t-1.
-        shift_logits = logits[..., :-1, :].contiguous()
+        shift_logits = logits[..., :-1, :].contiguous().float()
         shift_labels = labels[..., 1:].contiguous()
         loss = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
