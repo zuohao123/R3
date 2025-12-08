@@ -514,7 +514,7 @@ def main() -> None:
         remove_unused_columns=False,
         bf16=model_cfg.bf16 and torch.cuda.is_available(),
         fp16=training_section.get("fp16", False) and torch.cuda.is_available(),
-        gradient_checkpointing=training_section.get("grad_checkpoint", True),
+        gradient_checkpointing=training_section.get("grad_checkpoint", False),
         dataloader_num_workers=training_section.get("num_workers", 0),
         ddp_find_unused_parameters=False if ddp else None,
         ddp_backend="nccl" if ddp else None,

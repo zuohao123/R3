@@ -69,7 +69,7 @@ training:
   log_interval: 10
   fp16: false
   grad_accum_steps: 12        # 重度阶段再提高累积步，压显存
-  grad_checkpoint: true
+  grad_checkpoint: false       # 先关闭以规避 dtype/backward 问题
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_stage3
   num_workers: 2

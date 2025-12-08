@@ -69,7 +69,7 @@ training:
   log_interval: 10
   fp16: false
   grad_accum_steps: 8
-  grad_checkpoint: true
+  grad_checkpoint: false  # 遇到 dtype/backward 问题，先关闭
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_stage2
   num_workers: 2
