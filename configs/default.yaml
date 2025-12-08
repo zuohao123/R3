@@ -17,7 +17,7 @@ dataset:
       weight: 3
       apply_corruption: false
   eval_split: val
-  batch_size: 1          # per-GPU batch，小显存下更稳
+  batch_size: 2          # per-GPU batch，小显存下更稳
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
 model:

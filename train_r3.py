@@ -200,6 +200,37 @@ class CurriculumScheduler(TrainerCallback):
             model.config.lambda_consistency = lambda_c
 
 
+class LossLogger(TrainerCallback):
+    """
+    Logs loss metrics to python logger every logging step on rank0.
+    """
+
+    def __init__(self, logger: logging.Logger | None = None) -> None:
+        super().__init__()
+        self.logger = logger or logging.getLogger(__name__)
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is None:
+            return
+        # Only log from rank0 to avoid duplication
+        local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+        if local_rank > 0:
+            return
+        msg = []
+        if "loss" in logs:
+            msg.append(f"loss={logs['loss']:.4f}")
+        if "task_loss" in logs:
+            msg.append(f"task_loss={float(logs['task_loss']):.4f}")
+        if "consistency_loss" in logs:
+            msg.append(f"consistency_loss={float(logs['consistency_loss']):.4f}")
+        if "learning_rate" in logs:
+            msg.append(f"lr={logs['learning_rate']:.6f}")
+        if "epoch" in logs:
+            msg.append(f"epoch={logs['epoch']:.4f}")
+        if msg:
+            self.logger.info(" | ".join(msg))
+
+
 class R3Trainer(Trainer):
     """
     Custom Trainer that computes dual-branch loss inline.
@@ -528,7 +559,7 @@ def main() -> None:
         args=training_args,
         train_dataset=train_dataset,
         data_collator=collate_fn,
-        callbacks=[CurriculumScheduler()],
+        callbacks=[CurriculumScheduler(), LossLogger(logging.getLogger())],
     )
     logging.info("Starting training for %s epochs", training_args.num_train_epochs)
     trainer.train()
