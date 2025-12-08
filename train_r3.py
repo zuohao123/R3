@@ -239,7 +239,8 @@ class R3Trainer(Trainer):
             is_clean_branch=False,
         )
 
-        loss_task = self._causal_ce(student_out["logits"], corrupted_tokens["labels"])
+        vision_tokens = corrupted_vision.size(1)
+        loss_task = self._causal_ce(student_out["logits"], corrupted_tokens["labels"], vision_tokens)
         loss_consistency = F.mse_loss(
             teacher_out["pooled_hidden"].detach(),
             student_out["pooled_hidden"],
@@ -257,10 +258,20 @@ class R3Trainer(Trainer):
         return total_loss
 
     @staticmethod
-    def _causal_ce(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    def _causal_ce(logits: torch.Tensor, labels: torch.Tensor, vision_tokens: int = 0) -> torch.Tensor:
         """
         Manual causal LM loss with label shift, ignoring -100.
         """
+        labels = labels.to(logits.device)
+        if vision_tokens > 0:
+            labels = F.pad(labels, (0, vision_tokens), value=-100)
+        # Align lengths if still mismatched (truncate or pad labels).
+        seq_len = logits.size(1)
+        if labels.size(1) < seq_len:
+            pad = seq_len - labels.size(1)
+            labels = F.pad(labels, (0, pad), value=-100)
+        elif labels.size(1) > seq_len:
+            labels = labels[:, :seq_len]
         # Shift: predict token t using logits at t-1.
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
