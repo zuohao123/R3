@@ -170,6 +170,11 @@ class BaseVLM(torch.nn.Module):
             for name, sub in m.named_children():
                 if "vision" in name or "visual" in name:
                     return sub
+        # Final fallback: scan all submodules for a vision-like class name.
+        for sub in model.modules():
+            cls_name = sub.__class__.__name__.lower()
+            if "vision" in cls_name and hasattr(sub, "forward"):
+                return sub
         return None
 
     @staticmethod
