@@ -135,6 +135,13 @@ class SelectiveReconstruction(nn.Module):
             "scores",
             torch.zeros(text_embeddings.size(0), 1, device=text_embeddings.device, dtype=text_embeddings.dtype),
         )
+
+        # Align batch for conf and evidence_scores
+        b = text_embeddings.size(0)
+        img_conf = self._align_batch(img_conf, b)
+        txt_conf = self._align_batch(txt_conf, b)
+        evidence_scores = self._align_batch(evidence_scores, b)
+
         gates = self.gating(img_conf, txt_conf, evidence_scores)
 
         prefix_tokens = self._build_prefix(evidence_embeddings) if self.config.enable_prefix else text_embeddings.new_zeros(text_embeddings.size(0), 0, text_embeddings.size(-1))
@@ -181,6 +188,19 @@ class SelectiveReconstruction(nn.Module):
             evidence_summary = evidence_embeddings.squeeze(2).mean(dim=1)
         tokens = self.imputation(text_embeddings, txt_conf, evidence_summary)
         return gates[:, 1].view(-1, 1, 1) * tokens
+
+    @staticmethod
+    def _align_batch(t: torch.Tensor, target_b: int) -> torch.Tensor:
+        """
+        Ensure tensor has batch=target_b. If batch=1, expand; otherwise truncate to min.
+        """
+        if t.size(0) == target_b:
+            return t
+        if t.size(0) == 1:
+            return t.expand(target_b, *([-1] * (t.dim() - 1)))
+        # truncate to smallest to avoid shape mismatch
+        min_b = min(target_b, t.size(0))
+        return t[:min_b]
 
 
 class TriPathReasoner(nn.Module):
