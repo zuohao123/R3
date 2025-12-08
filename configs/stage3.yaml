@@ -35,7 +35,7 @@ dataset:
         blur_prob: 0.6
         blur_radius: 3.5
   eval_split: val
-  batch_size: 1
+  batch_size: 2
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl
 model:
