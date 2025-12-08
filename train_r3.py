@@ -246,7 +246,10 @@ class R3Trainer(Trainer):
             student_out["pooled_hidden"],
         )
         lambda_c = getattr(base_model.config, "lambda_consistency", 0.0)
-        total_loss = loss_task + lambda_c * loss_consistency
+        # Ensure loss is in float32 to avoid backward dtype issues under mixed precision.
+        loss_task = loss_task.float()
+        loss_consistency = loss_consistency.float()
+        total_loss = (loss_task + lambda_c * loss_consistency).float()
 
         outputs = {
             "task_loss": loss_task.detach(),
