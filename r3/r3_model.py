@@ -43,6 +43,15 @@ class R3ModelConfig:
     retrieval_cache_path: Optional[str] = None
     retrieval_corpus_path: Optional[str] = None
 
+    # Lightweight compatibility with HF callbacks that expect PretrainedConfig APIs.
+    def to_dict(self) -> Dict:
+        from dataclasses import asdict
+        return asdict(self)
+
+    def to_json_string(self) -> str:
+        import json
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+
 
 class R3Model(torch.nn.Module):
     """
