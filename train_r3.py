@@ -498,6 +498,8 @@ def main() -> None:
     logging.info("Model initialized with backbone %s", model_cfg.model_name)
     if hasattr(model, "base_vlm") and hasattr(model.base_vlm, "model") and hasattr(model.base_vlm.model, "config"):
         model.base_vlm.model.config.use_cache = False
+        if hasattr(model.base_vlm.model, "gradient_checkpointing_disable"):
+            model.base_vlm.model.gradient_checkpointing_disable()
 
     ddp = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     training_args = TrainingArguments(
