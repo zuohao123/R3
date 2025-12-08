@@ -106,7 +106,9 @@ class BaseVLM(torch.nn.Module):
             raise ValueError("Processor did not return pixel_values for vision encoding.")
         pixel_values = pixel_values.to(device=device, dtype=self.model.dtype)
 
-        grid_thw = inputs.get("image_grid_thw") or inputs.get("grid_thw")
+        grid_thw = inputs.get("image_grid_thw")
+        if grid_thw is None:
+            grid_thw = inputs.get("grid_thw")
         if grid_thw is not None:
             grid_thw = grid_thw.to(device=device)
 
