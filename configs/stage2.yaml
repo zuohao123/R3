@@ -70,6 +70,8 @@ training:
   fp16: false
   grad_accum_steps: 8
   grad_checkpoint: true
+  report_to: tensorboard
+  logging_dir: ./checkpoints/runs_stage2
   num_workers: 2
   learning_rate: 0.0002
   weight_decay: 0.05

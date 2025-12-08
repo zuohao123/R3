@@ -53,6 +53,14 @@ class UncertaintyAwareCorruptionSimulator(nn.Module):
             vision_feats: (batch, num_img_tokens, dim)
             text_feats: (batch, num_txt_tokens, dim)
         """
+        # Align heads to input dtype/device to avoid matmul dtype mismatches under 4/8bit or fp16.
+        target_dtype = vision_feats.dtype
+        target_device = vision_feats.device
+        if self.img_conf_head[0].weight.dtype != target_dtype or self.img_conf_head[0].weight.device != target_device:
+            self.img_conf_head = self.img_conf_head.to(device=target_device, dtype=target_dtype)
+        if self.txt_conf_head[0].weight.dtype != text_feats.dtype or self.txt_conf_head[0].weight.device != text_feats.device:
+            self.txt_conf_head = self.txt_conf_head.to(device=text_feats.device, dtype=text_feats.dtype)
+
         img_conf = torch.sigmoid(self.img_conf_head(vision_feats)).squeeze(-1)
         txt_conf = torch.sigmoid(self.txt_conf_head(text_feats)).squeeze(-1)
 

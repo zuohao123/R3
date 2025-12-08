@@ -120,12 +120,20 @@ class PseudoTextRetrievalModule(nn.Module):
         img_conf: torch.Tensor,
         txt_conf: torch.Tensor,
     ) -> Dict[str, torch.Tensor | List[List[str]]]:
+        # Align projection heads to input dtype/device to avoid matmul dtype mismatch under quantization/fp16.
+        target_device = question_embeddings.device
+        target_dtype = question_embeddings.dtype
+        if self.query_proj.weight.device != target_device or self.query_proj.weight.dtype != target_dtype:
+            self.query_proj = self.query_proj.to(device=target_device, dtype=target_dtype)
+            self.evidence_proj = self.evidence_proj.to(device=target_device, dtype=target_dtype)
+            self.scorer = self.scorer.to(device=target_device, dtype=target_dtype)
+
         if not self.config.enable:
             batch_size = question_embeddings.size(0)
             return {
                 "texts": [[] for _ in range(batch_size)],
-                "embeddings": torch.zeros(batch_size, 0, 1, self.config.hidden_size, device=question_embeddings.device),
-                "scores": torch.zeros(batch_size, 0, device=question_embeddings.device),
+                "embeddings": torch.zeros(batch_size, 0, 1, self.config.hidden_size, device=question_embeddings.device, dtype=question_embeddings.dtype),
+                "scores": torch.zeros(batch_size, 0, device=question_embeddings.device, dtype=question_embeddings.dtype),
             }
 
         query = self._build_query(question_embeddings, txt_conf)  # (b, d)
@@ -173,7 +181,7 @@ class PseudoTextRetrievalModule(nn.Module):
                 encoded_entries.append(vec.mean(dim=0))
                 stored_texts.append(text)
             if not encoded_entries:
-                encoded_entries = [torch.zeros(self.config.hidden_size, device=device)]
+                encoded_entries = [torch.zeros(self.config.hidden_size, device=device, dtype=self.embedding_layer.weight.dtype)]
                 stored_texts.append("")
             embeddings.append(torch.stack(encoded_entries))
             texts.append(stored_texts)
@@ -181,7 +189,7 @@ class PseudoTextRetrievalModule(nn.Module):
         padded = []
         for emb in embeddings:
             if emb.size(0) < max_len:
-                pad = torch.zeros(max_len - emb.size(0), emb.size(1), device=device)
+                pad = torch.zeros(max_len - emb.size(0), emb.size(1), device=device, dtype=emb.dtype)
                 emb = torch.cat([emb, pad], dim=0)
             padded.append(emb)
         stacked = torch.stack(padded)  # (b, evidences, d)

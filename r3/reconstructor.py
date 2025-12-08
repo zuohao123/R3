@@ -124,8 +124,17 @@ class SelectiveReconstruction(nn.Module):
         img_conf: torch.Tensor,
         txt_conf: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
+        # Align submodules to input dtype/device to avoid matmul dtype mismatch.
+        self.prefix = self.prefix.to(device=text_embeddings.device, dtype=text_embeddings.dtype)
+        self.memory = self.memory.to(device=text_embeddings.device, dtype=text_embeddings.dtype)
+        self.imputation = self.imputation.to(device=text_embeddings.device, dtype=text_embeddings.dtype)
+        self.gating = self.gating.to(device=text_embeddings.device, dtype=text_embeddings.dtype)
+
         evidence_embeddings = retrieval.get("embeddings")
-        evidence_scores = retrieval.get("scores", torch.zeros(text_embeddings.size(0), 1, device=text_embeddings.device))
+        evidence_scores = retrieval.get(
+            "scores",
+            torch.zeros(text_embeddings.size(0), 1, device=text_embeddings.device, dtype=text_embeddings.dtype),
+        )
         gates = self.gating(img_conf, txt_conf, evidence_scores)
 
         prefix_tokens = self._build_prefix(evidence_embeddings) if self.config.enable_prefix else text_embeddings.new_zeros(text_embeddings.size(0), 0, text_embeddings.size(-1))
@@ -162,7 +171,12 @@ class SelectiveReconstruction(nn.Module):
         gates: torch.Tensor,
     ) -> torch.Tensor:
         if evidence_embeddings.numel() == 0:
-            evidence_summary = torch.zeros(text_embeddings.size(0), text_embeddings.size(-1), device=text_embeddings.device)
+            evidence_summary = torch.zeros(
+                text_embeddings.size(0),
+                text_embeddings.size(-1),
+                device=text_embeddings.device,
+                dtype=text_embeddings.dtype,
+            )
         else:
             evidence_summary = evidence_embeddings.squeeze(2).mean(dim=1)
         tokens = self.imputation(text_embeddings, txt_conf, evidence_summary)
@@ -191,6 +205,8 @@ class TriPathReasoner(nn.Module):
 
     def forward(self, inputs_embeds: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> torch.Tensor:
         # Build key padding mask: True for pads
+        self.encoder = self.encoder.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
+        self.layer_norm = self.layer_norm.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
         key_padding = None
         if attention_mask is not None:
             key_padding = attention_mask == 0

@@ -70,6 +70,8 @@ training:
   fp16: false
   grad_accum_steps: 12        # 重度阶段再提高累积步，压显存
   grad_checkpoint: true
+  report_to: tensorboard
+  logging_dir: ./checkpoints/runs_stage3
   num_workers: 2
   learning_rate: 0.0002
   weight_decay: 0.05
