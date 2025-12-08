@@ -240,6 +240,20 @@ class R3Model(torch.nn.Module):
         vision_embeds: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        # Align batch dimension in case vision tower collapses to batch=1 when inputs vary.
+        b_text = text_embeds.size(0)
+        b_vis = vision_embeds.size(0)
+        if b_vis != b_text:
+            if b_vis == 1:
+                vision_embeds = vision_embeds.expand(b_text, -1, -1)
+            else:
+                min_b = min(b_text, b_vis)
+                text_embeds = text_embeds[:min_b]
+                text_attention = text_attention[:min_b]
+                vision_embeds = vision_embeds[:min_b]
+                if labels is not None:
+                    labels = labels[:min_b]
+
         vision_mask = torch.ones(
             vision_embeds.size(0),
             vision_embeds.size(1),
