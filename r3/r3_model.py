@@ -26,7 +26,7 @@ class R3ModelConfig:
     load_in_8bit: bool = False
     device_map: Optional[str | Dict] = None
     low_cpu_mem_usage: bool = True
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = False
     provider: str = "huggingface"
     token: Optional[str] = None
     cache_dir: Optional[str] = None

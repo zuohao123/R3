@@ -48,7 +48,7 @@ model:
   load_in_4bit: true
   load_in_8bit: false
   device_map: null           # torchrun 下设 null，避免重复切分
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   low_cpu_mem_usage: true
   provider: huggingface
   token: null

@@ -30,7 +30,7 @@ model:
   load_in_4bit: true          # 启用 4bit 量化，显著降低显存
   load_in_8bit: false
   device_map: auto            # 单进程下自动切分到可见 GPU，实现模型并行；多卡 DDP 时改为 null
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   low_cpu_mem_usage: true
   provider: huggingface  # 本地路径也用 huggingface provider
   token: null            # 使用本地模型，不需要 token
