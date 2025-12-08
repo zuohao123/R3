@@ -238,12 +238,13 @@ class R3Trainer(Trainer):
             pseudo_text=corrupted_pseudo,
             is_clean_branch=False,
         )
-
+        # Ensure loss inputs are float32 to avoid Half/Float mismatch in backward.
         vision_tokens = corrupted_vision.size(1)
-        loss_task = self._causal_ce(student_out["logits"], corrupted_tokens["labels"], vision_tokens)
+        student_logits = student_out["logits"].float()
+        loss_task = self._causal_ce(student_logits, corrupted_tokens["labels"], vision_tokens)
         loss_consistency = F.mse_loss(
-            teacher_out["pooled_hidden"].detach(),
-            student_out["pooled_hidden"],
+            teacher_out["pooled_hidden"].detach().float(),
+            student_out["pooled_hidden"].float(),
         )
         lambda_c = getattr(base_model.config, "lambda_consistency", 0.0)
         # Ensure loss is in float32 to avoid backward dtype issues under mixed precision.
