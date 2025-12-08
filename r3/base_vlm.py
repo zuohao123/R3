@@ -105,16 +105,24 @@ class BaseVLM(torch.nn.Module):
         if pixel_values is None:
             raise ValueError("Processor did not return pixel_values for vision encoding.")
         pixel_values = pixel_values.to(device=device, dtype=self.model.dtype)
-        vision_hidden = self._forward_vision(pixel_values)
+
+        grid_thw = inputs.get("image_grid_thw") or inputs.get("grid_thw")
+        if grid_thw is not None:
+            grid_thw = grid_thw.to(device=device)
+
+        vision_hidden = self._forward_vision(pixel_values, grid_thw=grid_thw)
         vision_hidden = self._resize_tokens(vision_hidden, vision_tokens)
         vision_hidden = self._match_hidden(vision_hidden, hidden_size)
         return vision_hidden
 
-    def _forward_vision(self, pixel_values: torch.Tensor) -> torch.Tensor:
+    def _forward_vision(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor | None = None) -> torch.Tensor:
         vision_fn = self._locate_vision_module(self.model)
         if vision_fn is None:
             raise RuntimeError("Backbone does not expose a vision module; cannot encode images.")
-        outputs = vision_fn(pixel_values)
+        try:
+            outputs = vision_fn(pixel_values, grid_thw=grid_thw) if grid_thw is not None else vision_fn(pixel_values)
+        except TypeError:
+            outputs = vision_fn(pixel_values)
         if isinstance(outputs, torch.Tensor):
             return outputs
         hidden = getattr(outputs, "last_hidden_state", None)
