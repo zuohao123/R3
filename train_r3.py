@@ -245,7 +245,7 @@ class R3Trainer(Trainer):
             teacher_out["pooled_hidden"].detach(),
             student_out["pooled_hidden"],
         )
-        lambda_c = getattr(model.config, "lambda_consistency", 0.0)
+        lambda_c = getattr(base_model.config, "lambda_consistency", 0.0)
         total_loss = loss_task + lambda_c * loss_consistency
 
         outputs = {
