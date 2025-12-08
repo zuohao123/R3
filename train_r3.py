@@ -225,7 +225,7 @@ class R3Trainer(Trainer):
                 input_ids=clean_tokens["input_ids"],
                 attention_mask=clean_tokens["attention_mask"],
                 pixel_values=clean_vision,
-                labels=clean_tokens["labels"],
+                labels=None,
                 pseudo_text=clean_pseudo,
                 is_clean_branch=True,
             )
@@ -234,12 +234,12 @@ class R3Trainer(Trainer):
             input_ids=corrupted_tokens["input_ids"],
             attention_mask=corrupted_tokens["attention_mask"],
             pixel_values=corrupted_vision,
-            labels=corrupted_tokens["labels"],
+            labels=None,
             pseudo_text=corrupted_pseudo,
             is_clean_branch=False,
         )
 
-        loss_task = student_out["loss"]
+        loss_task = self._causal_ce(student_out["logits"], corrupted_tokens["labels"])
         loss_consistency = F.mse_loss(
             teacher_out["pooled_hidden"].detach(),
             student_out["pooled_hidden"],
@@ -255,6 +255,21 @@ class R3Trainer(Trainer):
         if return_outputs:
             return total_loss, outputs
         return total_loss
+
+    @staticmethod
+    def _causal_ce(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """
+        Manual causal LM loss with label shift, ignoring -100.
+        """
+        # Shift: predict token t using logits at t-1.
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            ignore_index=-100,
+        )
+        return loss
 
     @staticmethod
     def _tokenize_branch(tokenizer, split: Dict, max_length: int, device: torch.device):

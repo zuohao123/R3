@@ -166,11 +166,11 @@ class R3Model(torch.nn.Module):
             outputs = self.base_vlm(
                 inputs_embeds=combined_inputs,
                 attention_mask=combined_attention,
-                labels=padded_labels,
+                labels=None,
             )
         pooled = self._pool_hidden(outputs.hidden_states)
         return {
-            "loss": outputs.loss if labels is not None else None,
+            "loss": None,
             "logits": outputs.logits,
             "hidden_states": outputs.hidden_states[-1],
             "pooled_hidden": pooled,
@@ -220,11 +220,11 @@ class R3Model(torch.nn.Module):
         outputs = self.base_vlm(
             inputs_embeds=combined_inputs,
             attention_mask=combined_attention,
-            labels=padded_labels,
+            labels=None,
         )
         pooled = self._pool_hidden(outputs.hidden_states)
         return {
-            "loss": outputs.loss,
+            "loss": None,
             "logits": outputs.logits,
             "hidden_states": outputs.hidden_states[-1],
             "pooled_hidden": pooled,
