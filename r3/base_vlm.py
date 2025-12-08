@@ -153,10 +153,22 @@ class BaseVLM(torch.nn.Module):
                     return m.get_vision_tower()
                 except Exception:
                     pass
+            if hasattr(m, "visual"):
+                vis = getattr(m, "visual")
+                try:
+                    return vis() if callable(vis) else vis
+                except Exception:
+                    return vis
+            if hasattr(m, "vision_encoder"):
+                ve = getattr(m, "vision_encoder")
+                try:
+                    return ve() if callable(ve) else ve
+                except Exception:
+                    return ve
 
         for m in candidates:
             for name, sub in m.named_children():
-                if "vision" in name:
+                if "vision" in name or "visual" in name:
                     return sub
         return None
 
