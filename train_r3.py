@@ -391,6 +391,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", type=Path, default=Path("checkpoints/r3"))
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--log_file", type=Path, default=None, help="Optional path to save training logs.")
+    parser.add_argument("--max_steps", type=int, default=None, help="Optional max training steps (overrides epochs).")
     return parser.parse_args()
 
 
@@ -538,6 +539,7 @@ def main() -> None:
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
         num_train_epochs=training_section.get("epochs", 1),
+        max_steps=args.max_steps if args.max_steps is not None else training_section.get("max_steps"),
         per_device_train_batch_size=dataset_section.get("batch_size", 2),
         gradient_accumulation_steps=training_section.get("grad_accum_steps", 1),
         learning_rate=training_section.get("learning_rate", 2e-4),
