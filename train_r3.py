@@ -555,6 +555,7 @@ def main() -> None:
         dataloader_num_workers=training_section.get("num_workers", 0),
         ddp_find_unused_parameters=False if ddp else None,
         ddp_backend="nccl" if ddp else None,
+        save_safetensors=False,  # avoid safetensors shared-memory save errors due to shared embeddings
     )
 
     trainer = R3Trainer(
