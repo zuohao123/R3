@@ -70,7 +70,13 @@ def decode_predictions(logits: torch.Tensor, labels: torch.Tensor, tokenizer) ->
     pred_ids = logits.argmax(dim=-1)
     predictions: List[str] = []
     for row_pred, row_label in zip(pred_ids, labels):
+        # Align lengths: pad/truncate mask to match logits length.
         mask = row_label != -100
+        if mask.size(0) < row_pred.size(0):
+            pad = torch.zeros(row_pred.size(0) - mask.size(0), dtype=mask.dtype, device=mask.device)
+            mask = torch.cat([mask, pad.bool()], dim=0)
+        elif mask.size(0) > row_pred.size(0):
+            mask = mask[: row_pred.size(0)]
         if mask.sum() == 0:
             predictions.append("")
             continue
