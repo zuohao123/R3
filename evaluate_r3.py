@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 import torch
 from torch.utils.data import DataLoader, Subset
+import os
 
 from data_pipeline.datasets import DATASET_REGISTRY, create_dataset, detect_dataset_type
 from data_pipeline.corruptions import ImageCorruptor, PseudoTextCorruptor
@@ -87,7 +88,20 @@ def main() -> None:
     split = args.split or eval_cfg.get("split") or dataset_cfg.get("eval_split", "val")
     apply_corruption = args.apply_corruption or eval_cfg.get("apply_corruption", False)
 
-    dataset_root = Path(dataset_cfg["root"])
+    # Resolve dataset root/type even when config uses multi-dataset setup.
+    dataset_root = dataset_cfg.get("root")
+    dataset_type = args.dataset_type
+    if not dataset_root and "multi" in dataset_cfg:
+        # Default to the first entry in multi for evaluation if no explicit root provided.
+        first = dataset_cfg["multi"][0]
+        dataset_root = first.get("root")
+        if dataset_type == "auto":
+            dataset_type = first.get("type", "auto")
+    if dataset_root is None:
+        raise ValueError("Dataset root is not specified; set dataset.root or choose an entry from dataset.multi.")
+    dataset_root = Path(dataset_root)
+
+    # Resolve dataset type
     dataset_type = args.dataset_type
     if dataset_type == "auto":
         dataset_type = dataset_cfg.get("type", "auto")
@@ -122,6 +136,12 @@ def main() -> None:
         lora_rank=model_section.get("lora_rank", 32),
         lora_alpha=model_section.get("lora_alpha", 16),
         hidden_size=model_section.get("hidden_size", 4096),
+        bf16=model_section.get("bf16", False),
+        load_in_4bit=model_section.get("load_in_4bit", False),
+        load_in_8bit=model_section.get("load_in_8bit", False),
+        device_map=model_section.get("device_map"),
+        low_cpu_mem_usage=model_section.get("low_cpu_mem_usage", True),
+        gradient_checkpointing=model_section.get("gradient_checkpointing", False),
         provider=model_section.get("provider", "huggingface"),
         token=model_section.get("token"),
         cache_dir=model_section.get("cache_dir"),
@@ -137,7 +157,13 @@ def main() -> None:
     )
     model = R3Model(model_cfg).to(args.device)
     if args.checkpoint:
-        state = torch.load(args.checkpoint, map_location=args.device)
+        ckpt_path = args.checkpoint
+        if ckpt_path.is_dir():
+            # Trainer 默认保存 pytorch_model.bin
+            candidate = ckpt_path / "pytorch_model.bin"
+            if candidate.exists():
+                ckpt_path = candidate
+        state = torch.load(ckpt_path, map_location=args.device)
         if "state_dict" in state:
             state = state["state_dict"]
         model.load_state_dict(state, strict=False)
@@ -165,29 +191,21 @@ def main() -> None:
                 train_dataset=None,
                 data_collator=None,
             )
-            clean_tokens, clean_pseudo = trainer_stub._tokenize_branch(tokenizer, clean_split, max_len, device)
             corrupted_tokens, corrupted_pseudo = trainer_stub._tokenize_branch(tokenizer, corrupted_split, max_len, device)
-            clean_vision = trainer_stub._get_vision_embeddings(model, clean_split, device)
             corrupted_vision = trainer_stub._get_vision_embeddings(model, corrupted_split, device)
 
-            clean_out = model(
-                input_ids=clean_tokens["input_ids"],
-                attention_mask=clean_tokens["attention_mask"],
-                pixel_values=clean_vision,
-                labels=clean_tokens["labels"],
-                pseudo_text=clean_pseudo,
-                is_clean_branch=True,
-            )
             student_out = model(
                 input_ids=corrupted_tokens["input_ids"],
                 attention_mask=corrupted_tokens["attention_mask"],
                 pixel_values=corrupted_vision,
-                labels=corrupted_tokens["labels"],
+                labels=None,
                 pseudo_text=corrupted_pseudo,
                 is_clean_branch=False,
             )
 
-            loss = student_out["loss"] if student_out.get("loss") is not None else torch.tensor(0.0, device=device)
+            # Manual CE loss to avoid shape mismatch; mirror training logic.
+            vision_tokens = corrupted_vision.size(1)
+            loss = trainer_stub._causal_ce(student_out["logits"].float(), corrupted_tokens["labels"], vision_tokens)
             total_loss += loss.item()
             total_batches += 1
 
