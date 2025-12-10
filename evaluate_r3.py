@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable_retrieval", action="store_true", help="Disable retrieval module at eval time.")
     parser.add_argument("--disable_consistency", action="store_true", help="Disable consistency (always off in eval).")
     parser.add_argument("--disable_corruption", action="store_true", help="Disable corruption module at eval time.")
+    parser.add_argument("--use_chat_template", action="store_true", help="Format prompts with Qwen chat template for base model eval.")
     return parser.parse_args()
 
 
@@ -89,6 +90,58 @@ def decode_predictions(logits: torch.Tensor, labels: torch.Tensor, tokenizer) ->
 
 def normalize_text(text: str) -> str:
     return " ".join(text.lower().strip().split())
+
+
+def build_prompts(questions: List[str], pseudo_batch: List[List[str]], labels: List[str], tokenizer, use_chat_template: bool) -> List[str]:
+    prompts = []
+    pseudo_fmt = []
+    for pseudo in pseudo_batch:
+        pseudo_fmt.append("\n".join([p for p in pseudo if p]))
+    for q, pseudo, lbl in zip(questions, pseudo_fmt, labels):
+        user_content = f"{pseudo}\nQuestion: {q}".strip() if pseudo else f"Question: {q}"
+        if use_chat_template:
+            messages = [{"role": "user", "content": user_content}]
+            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            prompt = f"{user_content}\nAnswer:"
+        full = f"{prompt} {lbl}".strip()
+        prompts.append((prompt, full))
+    return prompts
+
+
+def tokenize_with_template(split: Dict, tokenizer, max_length: int, device: torch.device, use_chat_template: bool):
+    questions = split["question"]
+    labels_text = split.get("labels", [""] * len(questions))
+    pseudo_text = split.get("pseudo_text", [[] for _ in questions])
+
+    prompts = build_prompts(questions, pseudo_text, labels_text, tokenizer, use_chat_template)
+    prompt_texts = [p for p, _ in prompts]
+    full_texts = [f for _, f in prompts]
+
+    prompt_tokens = tokenizer(
+        prompt_texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+    )
+    text_tokens = tokenizer(
+        full_texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+    )
+    text_tokens = {k: v.to(device) for k, v in text_tokens.items()}
+    prompt_tokens = {k: v.to(device) for k, v in prompt_tokens.items()}
+
+    labels = text_tokens["input_ids"].clone()
+    labels[text_tokens["attention_mask"] == 0] = -100
+    prompt_lengths = prompt_tokens["attention_mask"].sum(dim=1)
+    for idx, length in enumerate(prompt_lengths):
+        labels[idx, : length.item()] = -100
+    text_tokens["labels"] = labels
+    return text_tokens, pseudo_text
 
 
 def main() -> None:
@@ -196,6 +249,12 @@ def main() -> None:
             print(f"[WARN] Checkpoint path {ckpt_path} not found, skip loading finetuned weights.")
     model.eval()
 
+    # Metric switches by dataset type
+    ds_lower = str(dataset_type).lower()
+    is_docvqa = "docvqa" in ds_lower
+    is_infovqa = "infovqa" in ds_lower
+    is_chartqa = "chartqa" in ds_lower
+
     total_loss = 0.0
     total_batches = 0
     correct = 0
@@ -210,17 +269,13 @@ def main() -> None:
             corrupted_split = batch["corrupted"]
             tokenizer = model.base_vlm.tokenizer
             max_len = getattr(model.config, "max_seq_length", 1024)
-            from train_r3 import R3Trainer  # reuse tokenizer/vision utilities
+            from train_r3 import R3Trainer  # reuse vision utilities
 
-            trainer_stub = R3Trainer(
-                model=model,
-                args=None,
-                train_dataset=None,
-                data_collator=None,
+            trainer_stub = R3Trainer(model=model, args=None, train_dataset=None, data_collator=None)
+            corrupted_tokens, corrupted_pseudo = tokenize_with_template(
+                corrupted_split, tokenizer, max_len, device, use_chat_template=args.use_chat_template
             )
-            corrupted_tokens, corrupted_pseudo = trainer_stub._tokenize_branch(tokenizer, corrupted_split, max_len, device)
             corrupted_vision = trainer_stub._get_vision_embeddings(model, corrupted_split, device)
-
             student_out = model(
                 input_ids=corrupted_tokens["input_ids"],
                 attention_mask=corrupted_tokens["attention_mask"],
@@ -248,15 +303,15 @@ def main() -> None:
 
     avg_loss = total_loss / max(1, total_batches)
     accuracy = correct / max(1, total)
-    anls_score = anls_sum / max(1, total)
-
     metrics = {
         "split": split,
         "samples": total,
         "loss": round(avg_loss, 4),
         "accuracy": round(accuracy, 4),
-        "anls": round(anls_score, 4),
     }
+    if is_docvqa:
+        anls_score = anls_sum / max(1, total)
+        metrics["anls"] = round(anls_score, 4)
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
 
     if args.predictions and dump_rows:
