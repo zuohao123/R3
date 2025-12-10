@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 import torch
 from torch.utils.data import DataLoader, Subset
 import os
+from tqdm import tqdm
 
 from data_pipeline.datasets import DATASET_REGISTRY, create_dataset, detect_dataset_type
 from data_pipeline.corruptions import ImageCorruptor, PseudoTextCorruptor
@@ -203,7 +204,7 @@ def main() -> None:
     dump_rows: List[Dict] = []
 
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc="eval", total=len(dataloader)):
             device = next(model.parameters()).device
             clean_split = batch["clean"]
             corrupted_split = batch["corrupted"]
