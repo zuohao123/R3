@@ -21,7 +21,8 @@ from train_r3 import R3Dataset, collate_fn, load_yaml, load_pseudo_corpus
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate R^3 checkpoints.")
     parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
-    parser.add_argument("--checkpoint", type=Path, default=None, help="Path to finetuned checkpoint; if omitted, use base backbone.")
+    parser.add_argument("--checkpoint", type=Path, default=None, help="Path to finetuned checkpoint file/dir; if omitted, use base backbone.")
+    parser.add_argument("--ckpt_dir", type=Path, default=None, help="Alias for --checkpoint when pointing to a directory.")
     parser.add_argument("--split", type=str, default=None, help="Override dataset split for evaluation.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap for quick smoke tests.")
@@ -33,6 +34,9 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", *sorted(DATASET_REGISTRY.keys())],
     )
     parser.add_argument("--apply_corruption", action="store_true", help="Apply pre-encoding modality drops (Image/Pseudo-text).")
+    parser.add_argument("--disable_retrieval", action="store_true", help="Disable retrieval module at eval time.")
+    parser.add_argument("--disable_consistency", action="store_true", help="Disable consistency (always off in eval).")
+    parser.add_argument("--disable_corruption", action="store_true", help="Disable corruption module at eval time.")
     return parser.parse_args()
 
 
@@ -87,6 +91,8 @@ def main() -> None:
     eval_cfg = cfg.get("evaluation", {})
     split = args.split or eval_cfg.get("split") or dataset_cfg.get("eval_split", "val")
     apply_corruption = args.apply_corruption or eval_cfg.get("apply_corruption", False)
+    if args.disable_corruption:
+        apply_corruption = False
 
     # Resolve dataset root/type even when config uses multi-dataset setup.
     dataset_root = dataset_cfg.get("root")
@@ -147,19 +153,19 @@ def main() -> None:
         cache_dir=model_section.get("cache_dir"),
         revision=model_section.get("revision"),
         local_files_only=model_section.get("local_files_only", False),
-        enable_corruption=model_section.get("enable_corruption", True),
-        enable_retrieval=model_section.get("enable_retrieval", True),
+        enable_corruption=False if args.disable_corruption else model_section.get("enable_corruption", True),
+        enable_retrieval=False if args.disable_retrieval else model_section.get("enable_retrieval", True),
         enable_prefix=model_section.get("enable_prefix", True),
         enable_memory=model_section.get("enable_memory", True),
         enable_imputation=model_section.get("enable_imputation", True),
-        enable_consistency=False,
+        enable_consistency=False if args.disable_consistency else model_section.get("enable_consistency", False),
         top_k=model_section.get("top_k", 3),
     )
     model = R3Model(model_cfg).to(args.device)
-    if args.checkpoint:
-        ckpt_path = args.checkpoint
+    ckpt_arg = args.checkpoint or args.ckpt_dir
+    if ckpt_arg:
+        ckpt_path = ckpt_arg
         if ckpt_path.is_dir():
-            # Trainer 默认保存 pytorch_model.bin
             candidate = ckpt_path / "pytorch_model.bin"
             if candidate.exists():
                 ckpt_path = candidate
