@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable_consistency", action="store_true", help="Disable consistency (always off in eval).")
     parser.add_argument("--disable_corruption", action="store_true", help="Disable corruption module at eval time.")
     parser.add_argument("--use_chat_template", action="store_true", help="Format prompts with Qwen chat template for base model eval.")
+    parser.add_argument("--log_interval", type=int, default=0, help="Print interim metrics every N batches (0=off).")
+    parser.add_argument("--log_samples", type=int, default=0, help="When logging, also print up to K (id, pred, target) pairs from that batch (0=off).")
     return parser.parse_args()
 
 
@@ -263,7 +265,7 @@ def main() -> None:
     dump_rows: List[Dict] = []
 
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="eval", total=len(dataloader)):
+        for idx, batch in enumerate(tqdm(dataloader, desc="eval", total=len(dataloader))):
             device = next(model.parameters()).device
             clean_split = batch["clean"]
             corrupted_split = batch["corrupted"]
@@ -300,6 +302,18 @@ def main() -> None:
                 anls_sum += anls(pred, target)
                 if args.predictions:
                     dump_rows.append({"id": sample_id, "prediction": pred, "target": target})
+
+            if args.log_interval and (idx + 1) % args.log_interval == 0:
+                interim_acc = correct / max(1, total)
+                msg = f"[eval] step {idx+1}/{len(dataloader)} acc={interim_acc:.4f}"
+                if is_docvqa:
+                    interim_anls = anls_sum / max(1, total)
+                    msg += f" anls={interim_anls:.4f}"
+                print(msg)
+                if args.log_samples:
+                    k = min(args.log_samples, len(predictions))
+                    for j in range(k):
+                        print(f"  id={batch['ids'][j]} | pred={predictions[j]} | target={targets[j]}")
 
     avg_loss = total_loss / max(1, total_batches)
     accuracy = correct / max(1, total)
