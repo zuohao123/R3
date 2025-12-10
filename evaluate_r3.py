@@ -166,13 +166,27 @@ def main() -> None:
     if ckpt_arg:
         ckpt_path = ckpt_arg
         if ckpt_path.is_dir():
-            candidate = ckpt_path / "pytorch_model.bin"
-            if candidate.exists():
-                ckpt_path = candidate
-        state = torch.load(ckpt_path, map_location=args.device)
-        if "state_dict" in state:
-            state = state["state_dict"]
-        model.load_state_dict(state, strict=False)
+            # HuggingFace shard格式（带 index.json）直接跳过手动加载，使用 base 模型权重
+            if (ckpt_path / "model.safetensors.index.json").exists():
+                print(f"[INFO] Found safetensors index in {ckpt_path}, skip manual load and use base weights.")
+                ckpt_path = None
+            else:
+                candidate_bin = ckpt_path / "pytorch_model.bin"
+                candidate_safe = ckpt_path / "model.safetensors"
+                if candidate_bin.exists():
+                    ckpt_path = candidate_bin
+                elif candidate_safe.exists():
+                    ckpt_path = candidate_safe
+                else:
+                    print(f"[WARN] Checkpoint dir {ckpt_path} has no pytorch_model.bin/model.safetensors, skip loading finetuned weights.")
+                    ckpt_path = None
+        if ckpt_path is not None and ckpt_path.exists():
+            state = torch.load(ckpt_path, map_location="cpu")
+            if "state_dict" in state:
+                state = state["state_dict"]
+            model.load_state_dict(state, strict=False)
+        elif ckpt_path is not None:
+            print(f"[WARN] Checkpoint path {ckpt_path} not found, skip loading finetuned weights.")
     model.eval()
 
     total_loss = 0.0
