@@ -313,7 +313,10 @@ def main() -> None:
                 if args.log_samples:
                     k = min(args.log_samples, len(predictions))
                     for j in range(k):
-                        print(f"  id={batch['ids'][j]} | pred={predictions[j]} | target={targets[j]}")
+                        img_path = None
+                        if isinstance(corrupted_split.get("image_path"), list) and j < len(corrupted_split["image_path"]):
+                            img_path = corrupted_split["image_path"][j]
+                        print(f"  id={batch['ids'][j]} | img={img_path} | pred={predictions[j]} | target={targets[j]}")
 
     avg_loss = total_loss / max(1, total_batches)
     accuracy = correct / max(1, total)
