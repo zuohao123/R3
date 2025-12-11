@@ -96,6 +96,25 @@ def normalize_text(text: str) -> str:
     return " ".join(text.lower().strip().split())
 
 
+def clean_generation_output(text: str) -> str:
+    """
+    Strip role markers like 'assistant'/'user' and keep the first non-empty line as answer.
+    """
+    t = text.strip()
+    # Remove common role prefixes
+    for prefix in ["assistant", "assistant:", "assistant\n", "assistant "]:
+        if t.lower().startswith(prefix):
+            t = t[len(prefix):].strip()
+            break
+    # Keep first non-empty line
+    for line in t.splitlines():
+        line = line.strip()
+        if line:
+            t = line
+            break
+    return t
+
+
 def build_prompts(questions: List[str], pseudo_batch: List[List[str]], labels: List[str], tokenizer, use_chat_template: bool) -> List[str]:
     prompts = []
     pseudo_fmt = []
@@ -317,6 +336,7 @@ def main() -> None:
                 proc_inputs = processor(text=[prompt], images=[img], return_tensors="pt").to(native_model.device)
                 gen_out = native_model.generate(**proc_inputs, max_new_tokens=64)
                 pred_text = tokenizer.decode(gen_out[0], skip_special_tokens=True).strip()
+                pred_text = clean_generation_output(pred_text)
                 target = batch["clean"]["labels"][0]
                 total += 1
                 if normalize_text(pred_text) == normalize_text(target):
