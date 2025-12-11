@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 import os
 from tqdm import tqdm
+from transformers import AutoProcessor, AutoTokenizer, AutoModelForVision2Seq
 
 from data_pipeline.datasets import DATASET_REGISTRY, create_dataset, detect_dataset_type
 from data_pipeline.corruptions import ImageCorruptor, PseudoTextCorruptor
@@ -41,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use_chat_template", action="store_true", help="Format prompts with Qwen chat template for base model eval.")
     parser.add_argument("--log_interval", type=int, default=0, help="Print interim metrics every N batches (0=off).")
     parser.add_argument("--log_samples", type=int, default=0, help="When logging, also print up to K (id, pred, target) pairs from that batch (0=off).")
+    parser.add_argument("--native_eval", action="store_true", help="Bypass R3 wrapper; use native Qwen3-VL forward with official chat template.")
     return parser.parse_args()
 
 
@@ -190,65 +192,82 @@ def main() -> None:
     if args.limit:
         dataset = Subset(dataset, list(range(min(args.limit, len(dataset)))))
 
+    eval_bs = 1 if args.native_eval else eval_cfg.get("batch_size", dataset_cfg.get("batch_size", 2))
     dataloader = DataLoader(
         dataset,
-        batch_size=eval_cfg.get("batch_size", dataset_cfg.get("batch_size", 2)),
+        batch_size=eval_bs,
         shuffle=False,
         num_workers=dataset_cfg.get("num_workers", 0),
         collate_fn=collate_fn,
     )
 
     model_section = cfg.get("model", {})
-    model_cfg = R3ModelConfig(
-        model_name=model_section.get("name", "Qwen/Qwen3-VL-8B-Instruct"),
-        lora_rank=model_section.get("lora_rank", 32),
-        lora_alpha=model_section.get("lora_alpha", 16),
-        hidden_size=model_section.get("hidden_size", 4096),
-        bf16=model_section.get("bf16", False),
-        load_in_4bit=model_section.get("load_in_4bit", False),
-        load_in_8bit=model_section.get("load_in_8bit", False),
-        device_map=model_section.get("device_map"),
-        low_cpu_mem_usage=model_section.get("low_cpu_mem_usage", True),
-        gradient_checkpointing=model_section.get("gradient_checkpointing", False),
-        provider=model_section.get("provider", "huggingface"),
-        token=model_section.get("token"),
-        cache_dir=model_section.get("cache_dir"),
-        revision=model_section.get("revision"),
-        local_files_only=model_section.get("local_files_only", False),
-        enable_corruption=False if args.disable_corruption else model_section.get("enable_corruption", True),
-        enable_retrieval=False if args.disable_retrieval else model_section.get("enable_retrieval", True),
-        enable_prefix=model_section.get("enable_prefix", True),
-        enable_memory=model_section.get("enable_memory", True),
-        enable_imputation=model_section.get("enable_imputation", True),
-        enable_consistency=False if args.disable_consistency else model_section.get("enable_consistency", False),
-        top_k=model_section.get("top_k", 3),
-    )
-    model = R3Model(model_cfg).to(args.device)
-    ckpt_arg = args.checkpoint or args.ckpt_dir
-    if ckpt_arg:
-        ckpt_path = ckpt_arg
-        if ckpt_path.is_dir():
-            # HuggingFace shard格式（带 index.json）直接跳过手动加载，使用 base 模型权重
-            if (ckpt_path / "model.safetensors.index.json").exists():
-                print(f"[INFO] Found safetensors index in {ckpt_path}, skip manual load and use base weights.")
-                ckpt_path = None
-            else:
-                candidate_bin = ckpt_path / "pytorch_model.bin"
-                candidate_safe = ckpt_path / "model.safetensors"
-                if candidate_bin.exists():
-                    ckpt_path = candidate_bin
-                elif candidate_safe.exists():
-                    ckpt_path = candidate_safe
-                else:
-                    print(f"[WARN] Checkpoint dir {ckpt_path} has no pytorch_model.bin/model.safetensors, skip loading finetuned weights.")
+    native_model = None
+    processor = None
+    tokenizer = None
+
+    if args.native_eval:
+        model_path = model_section.get("name", "Qwen/Qwen3-VL-8B-Instruct")
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        native_model = AutoModelForVision2Seq.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            device_map="auto",
+            torch_dtype=torch.float16,
+        )
+        native_model.eval()
+    else:
+        model_cfg = R3ModelConfig(
+            model_name=model_section.get("name", "Qwen/Qwen3-VL-8B-Instruct"),
+            lora_rank=model_section.get("lora_rank", 32),
+            lora_alpha=model_section.get("lora_alpha", 16),
+            hidden_size=model_section.get("hidden_size", 4096),
+            bf16=model_section.get("bf16", False),
+            load_in_4bit=model_section.get("load_in_4bit", False),
+            load_in_8bit=model_section.get("load_in_8bit", False),
+            device_map=model_section.get("device_map"),
+            low_cpu_mem_usage=model_section.get("low_cpu_mem_usage", True),
+            gradient_checkpointing=model_section.get("gradient_checkpointing", False),
+            provider=model_section.get("provider", "huggingface"),
+            token=model_section.get("token"),
+            cache_dir=model_section.get("cache_dir"),
+            revision=model_section.get("revision"),
+            local_files_only=model_section.get("local_files_only", False),
+            enable_corruption=False if args.disable_corruption else model_section.get("enable_corruption", True),
+            enable_retrieval=False if args.disable_retrieval else model_section.get("enable_retrieval", True),
+            enable_prefix=model_section.get("enable_prefix", True),
+            enable_memory=model_section.get("enable_memory", True),
+            enable_imputation=model_section.get("enable_imputation", True),
+            enable_consistency=False if args.disable_consistency else model_section.get("enable_consistency", False),
+            top_k=model_section.get("top_k", 3),
+        )
+        model = R3Model(model_cfg).to(args.device)
+        ckpt_arg = args.checkpoint or args.ckpt_dir
+        if ckpt_arg:
+            ckpt_path = ckpt_arg
+            if ckpt_path.is_dir():
+                # HuggingFace shard格式（带 index.json）直接跳过手动加载，使用 base 模型权重
+                if (ckpt_path / "model.safetensors.index.json").exists():
+                    print(f"[INFO] Found safetensors index in {ckpt_path}, skip manual load and use base weights.")
                     ckpt_path = None
-        if ckpt_path is not None and ckpt_path.exists():
-            state = torch.load(ckpt_path, map_location="cpu")
-            if "state_dict" in state:
-                state = state["state_dict"]
-            model.load_state_dict(state, strict=False)
-        elif ckpt_path is not None:
-            print(f"[WARN] Checkpoint path {ckpt_path} not found, skip loading finetuned weights.")
+                else:
+                    candidate_bin = ckpt_path / "pytorch_model.bin"
+                    candidate_safe = ckpt_path / "model.safetensors"
+                    if candidate_bin.exists():
+                        ckpt_path = candidate_bin
+                    elif candidate_safe.exists():
+                        ckpt_path = candidate_safe
+                    else:
+                        print(f"[WARN] Checkpoint dir {ckpt_path} has no pytorch_model.bin/model.safetensors, skip loading finetuned weights.")
+                        ckpt_path = None
+            if ckpt_path is not None and ckpt_path.exists():
+                state = torch.load(ckpt_path, map_location="cpu")
+                if "state_dict" in state:
+                    state = state["state_dict"]
+                model.load_state_dict(state, strict=False)
+            elif ckpt_path is not None:
+                print(f"[WARN] Checkpoint path {ckpt_path} not found, skip loading finetuned weights.")
     model.eval()
 
     # Metric switches by dataset type
@@ -266,6 +285,43 @@ def main() -> None:
 
     with torch.no_grad():
         for idx, batch in enumerate(tqdm(dataloader, desc="eval", total=len(dataloader))):
+            if args.native_eval:
+                # Expect batch_size=1
+                q = batch["clean"]["question"][0]
+                img = batch["clean"]["images"][0] if batch["clean"]["images"][0] is not None else None
+                img_path = batch["clean"]["image_path"][0] if isinstance(batch["clean"].get("image_path"), list) else None
+                if img is None and img_path:
+                    from PIL import Image
+                    img = Image.open(img_path).convert("RGB")
+                messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}]
+                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                proc_inputs = processor(text=[prompt], images=[img], return_tensors="pt").to(native_model.device)
+                gen_out = native_model.generate(**proc_inputs, max_new_tokens=64)
+                pred_text = tokenizer.decode(gen_out[0], skip_special_tokens=True).strip()
+                target = batch["clean"]["labels"][0]
+                total += 1
+                if normalize_text(pred_text) == normalize_text(target):
+                    correct += 1
+                anls_sum += anls(pred_text, target)
+                predictions = [pred_text]
+                targets = [target]
+                if args.predictions:
+                    dump_rows.append({"id": batch["ids"][0], "prediction": pred_text, "target": target, "image_path": img_path})
+                total_batches += 1
+                # interim logging
+                if args.log_interval and (idx + 1) % args.log_interval == 0:
+                    interim_acc = correct / max(1, total)
+                    msg = f"[eval] step {idx+1}/{len(dataloader)} acc={interim_acc:.4f}"
+                    if is_docvqa:
+                        interim_anls = anls_sum / max(1, total)
+                        msg += f" anls={interim_anls:.4f}"
+                    print(msg)
+                    if args.log_samples:
+                        k = min(args.log_samples, len(predictions))
+                        for j in range(k):
+                            print(f"  id={batch['ids'][j]} | img={batch['clean']['image_path'][j] if isinstance(batch['clean'].get('image_path'), list) else None} | pred={predictions[j]} | target={targets[j]}")
+                continue
+
             device = next(model.parameters()).device
             clean_split = batch["clean"]
             corrupted_split = batch["corrupted"]
