@@ -270,7 +270,6 @@ def main() -> None:
             elif ckpt_path is not None:
                 print(f"[WARN] Checkpoint path {ckpt_path} not found, skip loading finetuned weights.")
         model.eval()
-    model.eval()
 
     # Metric switches by dataset type
     ds_lower = str(dataset_type).lower()
