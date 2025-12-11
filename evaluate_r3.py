@@ -334,8 +334,16 @@ def main() -> None:
                 messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}]
                 prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 proc_inputs = processor(text=[prompt], images=[img], return_tensors="pt").to(native_model.device)
-                gen_out = native_model.generate(**proc_inputs, max_new_tokens=64)
-                pred_text = tokenizer.decode(gen_out[0], skip_special_tokens=True).strip()
+                input_len = proc_inputs["input_ids"].shape[1]
+                gen_out = native_model.generate(
+                    **proc_inputs,
+                    max_new_tokens=64,
+                    eos_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+                # Slice off the prompt tokens
+                gen_ids = gen_out[0][input_len:]
+                pred_text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
                 pred_text = clean_generation_output(pred_text)
                 target = batch["clean"]["labels"][0]
                 total += 1
