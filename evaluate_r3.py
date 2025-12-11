@@ -205,6 +205,7 @@ def main() -> None:
     native_model = None
     processor = None
     tokenizer = None
+    model = None
 
     if args.native_eval:
         model_path = model_section.get("name", "Qwen/Qwen3-VL-8B-Instruct")
@@ -268,6 +269,7 @@ def main() -> None:
                 model.load_state_dict(state, strict=False)
             elif ckpt_path is not None:
                 print(f"[WARN] Checkpoint path {ckpt_path} not found, skip loading finetuned weights.")
+        model.eval()
     model.eval()
 
     # Metric switches by dataset type
