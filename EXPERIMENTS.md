@@ -175,4 +175,4 @@ torchrun --nproc_per_node=4 evaluate_r3.py \
 | 训练/存储 | 避免 safetensors 共享权重报错 | `train_r3.py` 默认 | `save_safetensors=False` 已在脚本设置，如遇相同报错请更新代码后重启训练 | 共享嵌入导致 safetensors 报错 |
 | 资源监控 | TensorBoard | 日志目录 | `tensorboard --logdir checkpoints/runs_default` | runs_stage2/3 类似 |
 | 资源监控 | 日志查看 | 输出目录 | `tail -f <out_dir>/train.log`；`tail -f <out_dir>/console.log` | LossLogger 写入 train.log |
-| 评测（全精+长视觉） | 基座官方风格 | `configs/eval_base_full.yaml` | `python evaluate_r3.py --config configs/eval_base_full.yaml --device cuda --ckpt_dir ./models/Qwen3-VL-8B-Instruct --split val --use_chat_template` | vision_tokens=64，关闭量化，对齐官方能力 |
+| 评测（全精+长视觉） | 基座官方风格 | `configs/eval_base_full.yaml` | `python evaluate_r3.py --config configs/eval_base_full.yaml --device cuda --ckpt_dir ./models/Qwen3-VL-8B-Instruct --split val --use_chat_template --native_eval` | 官方 chat 模板 + 原生前向 |

@@ -26,7 +26,7 @@ model:
   lora_alpha: 16
   hidden_size: 4096
   bf16: false                 # V100 不支持 bf16
-  vision_tokens: 6
+  vision_tokens: 32         # 对齐官方长视觉序列，训练/评测均使用较长视觉 token
   load_in_4bit: true          # 启用 4bit 量化，显著降低显存
   load_in_8bit: false
   device_map: auto            # 单进程下自动切分到可见 GPU，实现模型并行；多卡 DDP 时改为 null
@@ -61,4 +61,4 @@ training:
 evaluation:
   split: val
   apply_corruption: false
-  batch_size: 2
+  batch_size: 1              # 避免长视觉/全精评测时 OOM
