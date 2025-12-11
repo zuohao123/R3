@@ -1,0 +1,50 @@
+dataset:
+  # 单数据集评测时请修改 root/type/split
+  root: ./data_pipeline/data/docvqa
+  type: docvqa
+  split: val
+  batch_size: 1
+  num_workers: 0
+  pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl
+model:
+  name: ./models/Qwen3-VL-8B-Instruct
+  lora_rank: 8
+  lora_alpha: 16
+  hidden_size: 4096
+  bf16: false
+  vision_tokens: 64          # 恢复更长视觉序列以对齐官方能力
+  load_in_4bit: false        # 关闭量化，按官方全精评测
+  load_in_8bit: false
+  device_map: auto           # 让 HF 自动切分
+  gradient_checkpointing: false
+  low_cpu_mem_usage: true
+  provider: huggingface
+  token: null
+  cache_dir: ./hf_cache
+  revision: null
+  local_files_only: true
+  retrieval_corpus_path: ./artifacts/pseudo_text_all_train.jsonl
+  enable_corruption: false
+  enable_retrieval: false
+  enable_prefix: true
+  enable_memory: true
+  enable_imputation: true
+  enable_consistency: false
+  lambda_consistency: 0.0
+  top_k: 3
+training:
+  epochs: 1
+  log_interval: 10
+  fp16: false
+  grad_accum_steps: 1
+  grad_checkpoint: false
+  report_to: tensorboard
+  logging_dir: ./checkpoints/runs_eval_base
+  num_workers: 0
+  learning_rate: 0.0002
+  weight_decay: 0.05
+  warmup_ratio: 0.05
+evaluation:
+  split: val
+  apply_corruption: false
+  batch_size: 1
