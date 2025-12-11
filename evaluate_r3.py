@@ -293,7 +293,25 @@ def main() -> None:
                 img_path = batch["clean"]["image_path"][0] if isinstance(batch["clean"].get("image_path"), list) else None
                 if img is None and img_path:
                     from PIL import Image
-                    img = Image.open(img_path).convert("RGB")
+                    cand = Path(img_path)
+                    candidates = [cand]
+                    # Fix duplicated segment like documents/documents
+                    if "documents/documents" in str(cand):
+                        candidates.append(Path(str(cand).replace("documents/documents", "documents", 1)))
+                    # If relative, try under dataset_root
+                    if dataset_root:
+                        candidates.append(dataset_root / cand)
+                        candidates.append(dataset_root / cand.name)
+                    loaded = False
+                    for c in candidates:
+                        if c.exists():
+                            img = Image.open(c).convert("RGB")
+                            img_path = str(c)
+                            loaded = True
+                            break
+                    if not loaded:
+                        print(f"[WARN] image not found for id={batch['ids'][0]} path={img_path}, tried {[str(c) for c in candidates]}; skip sample")
+                        continue
                 messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}]
                 prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 proc_inputs = processor(text=[prompt], images=[img], return_tensors="pt").to(native_model.device)
