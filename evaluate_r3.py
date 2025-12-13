@@ -63,8 +63,8 @@ def levenshtein_distance(a: str, b: str) -> int:
 
 
 def anls(pred: str, target: str, threshold: float = 0.5) -> float:
-    pred_norm = pred.lower().strip()
-    target_norm = target.lower().strip()
+    pred_norm = normalize_basic(pred)
+    target_norm = normalize_basic(target)
     if not target_norm:
         return 1.0 if not pred_norm else 0.0
     distance = levenshtein_distance(pred_norm, target_norm)
@@ -115,42 +115,31 @@ def clean_generation_output(text: str) -> str:
     return t
 
 
-def extract_answer_span(text: str) -> str:
+def first_sentence(text: str) -> str:
     """
-    Heuristic answer extraction to shorten verbose generations:
-    - keep first sentence/line
-    - strip boilerplate ('based on ...', 'the answer is', etc.)
-    - if numbers/dates present, return the first numeric-like token
+    Keep first non-empty line and cut at first sentence end if present.
     """
-    import re
-
-    # First line / sentence
-    t = text.splitlines()[0].strip()
+    t = text.strip()
+    if not t:
+        return t
+    t = t.splitlines()[0].strip()
     for sep in [".", "!", "?"]:
         if sep in t:
             t = t.split(sep)[0].strip()
             break
-    # Remove leading boilerplate
-    boiler = [
-        "based on the provided",
-        "based on the document",
-        "according to the document",
-        "according to the provided",
-        "the answer is",
-        "answer:",
-    ]
-    tl = t.lower()
-    for b in boiler:
-        if tl.startswith(b):
-            t = t[len(b):].strip(" :,-")
-            break
-    # If contains number/date-like tokens, pick the first
-    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9/\\.,:-]*", t)
-    for tok in tokens:
-        if re.search(r"[0-9]", tok):
-            return tok.strip(" ,.;:-")
-    # Otherwise return trimmed text
     return t.strip(" \"'")
+
+
+def normalize_basic(text: str) -> str:
+    """
+    Basic normalization for fair matching: lower, strip, collapse spaces, strip trailing punctuation/commas.
+    """
+    import re
+
+    t = text.lower().strip()
+    t = re.sub(r"\s+", " ", t)
+    t = t.strip(" ,.;:!?\"'")
+    return t
 
 
 def build_prompts(questions: List[str], pseudo_batch: List[List[str]], labels: List[str], tokenizer, use_chat_template: bool) -> List[str]:
@@ -382,13 +371,12 @@ def main() -> None:
                 # Slice off the prompt tokens
                 gen_ids = gen_out[0][input_len:]
                 pred_text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
-                pred_text = clean_generation_output(pred_text)
-                pred_text = extract_answer_span(pred_text)
+                pred_text = first_sentence(clean_generation_output(pred_text))
                 target = batch["clean"]["labels"][0]
                 total += 1
-                norm_pred = normalize_text(pred_text)
-                norm_tgt = normalize_text(target)
-                if norm_pred == norm_tgt or norm_pred in norm_tgt or norm_tgt in norm_pred:
+                norm_pred = normalize_basic(pred_text)
+                norm_tgt = normalize_basic(target)
+                if norm_pred == norm_tgt:
                     correct += 1
                 anls_sum += anls(pred_text, target)
                 predictions = [pred_text]
@@ -438,13 +426,13 @@ def main() -> None:
             total_batches += 1
 
             raw_predictions = decode_predictions(student_out["logits"], corrupted_tokens["labels"], tokenizer)
-            predictions = [extract_answer_span(clean_generation_output(p)) for p in raw_predictions]
+            predictions = [first_sentence(clean_generation_output(p)) for p in raw_predictions]
             targets = corrupted_split["labels"]
             for sample_id, pred, target in zip(batch["ids"], predictions, targets):
                 total += 1
-                norm_pred = normalize_text(pred)
-                norm_tgt = normalize_text(target)
-                if norm_pred == norm_tgt or norm_pred in norm_tgt or norm_tgt in norm_pred:
+                norm_pred = normalize_basic(pred)
+                norm_tgt = normalize_basic(target)
+                if norm_pred == norm_tgt:
                     correct += 1
                 anls_sum += anls(pred, target)
                 if args.predictions:
