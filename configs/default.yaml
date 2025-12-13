@@ -17,7 +17,7 @@ dataset:
       weight: 3
       apply_corruption: false
   eval_split: val
-  batch_size: 2          # per-GPU batch，小显存下更稳
+  batch_size: 1          # 全精/长视觉下单卡 batch=1 更稳
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
 model:
@@ -26,8 +26,8 @@ model:
   lora_alpha: 16
   hidden_size: 4096
   bf16: false                 # V100 不支持 bf16
-  vision_tokens: 32         # 对齐官方长视觉序列，训练/评测均使用较长视觉 token
-  load_in_4bit: true          # 启用 4bit 量化，显著降低显存
+  vision_tokens: 64           # 对齐官方长视觉序列
+  load_in_4bit: false         # 关闭量化，避免精度差异
   load_in_8bit: false
   device_map: auto            # 单进程下自动切分到可见 GPU，实现模型并行；多卡 DDP 时改为 null
   gradient_checkpointing: false
@@ -49,8 +49,8 @@ model:
 training:
   epochs: 1
   log_interval: 10
-  fp16: false            # 量化时关闭 fp16
-  grad_accum_steps: 4    # batch=2 时全局 batch≈32，吞吐更高
+  fp16: true             # 全精 fp16 训练
+  grad_accum_steps: 16   # batch=1 时累积以控制显存，全局等效 batch≈16*卡数
   grad_checkpoint: false  # 先关闭以规避 dtype/backward 问题，显存不足再开启
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_default

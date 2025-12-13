@@ -35,7 +35,7 @@ dataset:
         blur_prob: 0.4
         blur_radius: 3.0
   eval_split: val
-  batch_size: 2
+  batch_size: 1
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl
 model:
@@ -44,8 +44,8 @@ model:
   lora_alpha: 16
   hidden_size: 4096
   bf16: false
-  vision_tokens: 32
-  load_in_4bit: true
+  vision_tokens: 64
+  load_in_4bit: false
   load_in_8bit: false
   device_map: null           # torchrun 下设 null，避免重复切分
   gradient_checkpointing: false
@@ -67,8 +67,8 @@ model:
 training:
   epochs: 1
   log_interval: 10
-  fp16: false
-  grad_accum_steps: 8
+  fp16: true
+  grad_accum_steps: 16
   grad_checkpoint: false  # 遇到 dtype/backward 问题，先关闭
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_stage2
