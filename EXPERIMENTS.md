@@ -13,7 +13,7 @@
 - Stage3：重 PMC，强化腐蚀和一致性权重。
 
 核心超参（已写入 configs）：
-- batch_per_gpu=2，grad_accum=12（全局≈24，模型并行后显存足够）。
+- batch_per_gpu=4，grad_accum=6（全局≈24，模型并行后显存仍可接受）。
 - fp16 关闭（fp32 训练以稳定对齐基座），vision_tokens=64，全精无量化。
 - lr：Stage1 1e-4；Stage2 5e-5；Stage3 3e-5；wd=0.01；warmup 2%/5%。
 - device_map=auto（单进程模型并行），无量化，无 grad checkpoint（显存不足再开）。

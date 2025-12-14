@@ -624,8 +624,21 @@ def main() -> None:
                     paths = clean.get("image_path")
                     if isinstance(paths, list) and paths and paths[0]:
                         from PIL import Image
-                        img_path = paths[0]
-                        img = Image.open(img_path).convert("RGB")
+                        # Try common locations to resolve relative path issues.
+                        candidates = [Path(paths[0])]
+                        if dataset_section.get("root"):
+                            root = Path(dataset_section["root"])
+                            candidates.append(root / paths[0])
+                            candidates.append(root / Path(paths[0]).name)
+                        loaded = False
+                        for c in candidates:
+                            if c.exists():
+                                img_path = str(c)
+                                img = Image.open(c).convert("RGB")
+                                loaded = True
+                                break
+                        if not loaded:
+                            raise FileNotFoundError(f"Image not found for quick_eval: {paths[0]}, tried {candidates}")
                 messages = [
                     {
                         "role": "user",
