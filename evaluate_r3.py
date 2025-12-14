@@ -374,7 +374,7 @@ def main() -> None:
                 input_len = proc_inputs["input_ids"].shape[1]
                 gen_out = native_model.generate(
                     **proc_inputs,
-                    max_new_tokens=64,
+                    max_new_tokens=512,
                     eos_token_id=tokenizer.eos_token_id,
                     pad_token_id=tokenizer.eos_token_id,
                 )
