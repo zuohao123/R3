@@ -53,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log_interval", type=int, default=0, help="Print interim metrics every N batches (0=off).")
     parser.add_argument("--log_samples", type=int, default=0, help="When logging, also print up to K (id, pred, target) pairs from that batch (0=off).")
     parser.add_argument("--native_eval", action="store_true", help="Bypass R3 wrapper; use native Qwen3-VL forward with official chat template.")
+    parser.add_argument("--errors", type=Path, default=None, help="Optional JSONL to dump only mispredicted samples.")
     return parser.parse_args()
 
 
@@ -374,6 +375,7 @@ def main() -> None:
     total = 0
     anls_sum = 0.0
     dump_rows: List[Dict] = []
+    error_rows: List[Dict] = []
 
     with torch.no_grad():
         for idx, batch in enumerate(tqdm(dataloader, desc="eval", total=len(dataloader))):
@@ -451,6 +453,16 @@ def main() -> None:
                             "image_path": img_path,
                         }
                     )
+                if norm_pred != norm_tgt and args.errors is not None:
+                    error_rows.append(
+                        {
+                            "id": batch["ids"][0],
+                            "image_path": img_path,
+                            "prediction": pred_text,
+                            "scored_prediction": pred_for_score,
+                            "target": target,
+                        }
+                    )
                 total_batches += 1
                 # interim logging
                 if args.log_interval and (idx + 1) % args.log_interval == 0:
@@ -511,6 +523,19 @@ def main() -> None:
                     dump_rows.append(
                         {"id": sample_id, "prediction": pred_raw, "scored_prediction": scored_pred, "target": target}
                     )
+                if norm_pred != norm_tgt and args.errors is not None:
+                    err_img = None
+                    if isinstance(corrupted_split.get("image_path"), list) and j < len(corrupted_split["image_path"]):
+                        err_img = corrupted_split["image_path"][j]
+                    error_rows.append(
+                        {
+                            "id": sample_id,
+                            "image_path": err_img,
+                            "prediction": pred_raw,
+                            "scored_prediction": scored_pred,
+                            "target": target,
+                        }
+                    )
 
             if args.log_interval and (idx + 1) % args.log_interval == 0:
                 interim_acc = correct / max(1, total)
@@ -548,6 +573,13 @@ def main() -> None:
             for row in dump_rows:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
         print(f"Predictions saved to {args.predictions}")
+
+    if args.errors and error_rows:
+        args.errors.parent.mkdir(parents=True, exist_ok=True)
+        with args.errors.open("w", encoding="utf-8") as f:
+            for row in error_rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        print(f"Errors saved to {args.errors}")
 
 
 if __name__ == "__main__":
