@@ -577,6 +577,7 @@ def main() -> None:
         ddp_find_unused_parameters=False if ddp else None,
         ddp_backend="nccl" if ddp else None,
         save_safetensors=False,  # avoid safetensors shared-memory save errors due to shared embeddings
+        place_model_on_device=False,  # respect device_map (model parallel) and avoid moving whole model to a single GPU
     )
 
     # Quick eval callback: runs on rank0 every N logging events if enabled
