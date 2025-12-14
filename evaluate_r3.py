@@ -9,6 +9,16 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
+# Older torch (<2.3) may miss torch.compiler.is_compiling which new Qwen processors call.
+if not hasattr(torch, "compiler"):
+    class _DummyCompiler:
+        @staticmethod
+        def is_compiling():
+            return False
+    torch.compiler = _DummyCompiler()  # type: ignore[attr-defined]
+elif not hasattr(torch.compiler, "is_compiling"):  # type: ignore[attr-defined]
+    torch.compiler.is_compiling = lambda: False  # type: ignore[attr-defined]
+
 from torch.utils.data import DataLoader, Subset
 import os
 from tqdm import tqdm
