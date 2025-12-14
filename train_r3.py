@@ -517,8 +517,11 @@ def main() -> None:
     else:
         train_dataset = build_single_dataset(dataset_section)
         logging.info("Single dataset initialized.")
-    # Cache one clean sample for quick eval
-    quick_eval_sample = collate_fn([train_dataset[0]]) if len(train_dataset) > 0 else None
+    # Cache a clean sample for quick eval; pick a random index each run (and store the index)
+    quick_eval_sample = None
+    if len(train_dataset) > 0:
+        quick_idx = random.randint(0, len(train_dataset) - 1)
+        quick_eval_sample = collate_fn([train_dataset[quick_idx]])
 
     model_section = cfg.get("model", {})
     training_section = cfg.get("training", {})
