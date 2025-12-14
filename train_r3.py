@@ -626,15 +626,24 @@ def main() -> None:
                         from PIL import Image
                         # Try common locations to resolve relative path issues.
                         candidates = [Path(paths[0])]
-                        if "documents/documents" in paths[0]:
-                            candidates.append(Path(paths[0].replace("documents/documents", "documents", 1)))
+                        # common duplicated segments to fix
+                        dup_fix = {
+                            "documents/documents": "documents",
+                            "charts/charts": "charts",
+                            "images/images": "images",
+                            "pics/pics": "pics",
+                        }
+                        for dup, fix in dup_fix.items():
+                            if dup in paths[0]:
+                                candidates.append(Path(paths[0].replace(dup, fix, 1)))
                         if dataset_section.get("root"):
                             root = Path(dataset_section["root"])
                             candidates.append(root / paths[0])
                             candidates.append(root / Path(paths[0]).name)
                             # also try fixing duplicated segment under root
-                            if "documents/documents" in paths[0]:
-                                candidates.append(root / paths[0].replace("documents/documents", "documents", 1))
+                            for dup, fix in dup_fix.items():
+                                if dup in paths[0]:
+                                    candidates.append(root / paths[0].replace(dup, fix, 1))
                         loaded = False
                         for c in candidates:
                             if c.exists():
