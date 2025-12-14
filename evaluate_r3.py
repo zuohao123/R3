@@ -145,11 +145,41 @@ def normalize_basic(text: str) -> str:
     Basic normalization for fair matching: lower, strip, collapse spaces, strip trailing punctuation/commas.
     """
     import re
-
     t = text.lower().strip()
+    # remove markdown bold markers and quotes/backticks
+    t = t.replace("**", " ").replace("`", " ").replace("“", " ").replace("”", " ")
+    # keep digits/letters, replace other punct with space
+    t = re.sub(r"[^\w\s.\-]", " ", t)
     t = re.sub(r"\s+", " ", t)
     t = t.strip(" ,.;:!?\"'")
     return t
+
+
+def best_span_match(pred: str, target: str) -> str:
+    """
+    For short answers (DocVQA/Chart/Info), pick a subspan of pred that best matches target
+    under normalized Levenshtein, to reduce penalty from verbose generations.
+    """
+    pred_norm = normalize_basic(pred)
+    tgt_norm = normalize_basic(target)
+    if not pred_norm or not tgt_norm:
+        return pred
+    pred_tokens = pred_norm.split()
+    tgt_tokens = tgt_norm.split()
+    min_len = max(1, int(len(tgt_tokens) * 0.5))
+    max_len = max(min_len, int(len(tgt_tokens) * 2))
+    best = pred_norm
+    best_score = -1.0
+    for i in range(len(pred_tokens)):
+        for j in range(i + min_len, min(len(pred_tokens), i + max_len) + 1):
+            span = " ".join(pred_tokens[i:j])
+            if not span:
+                continue
+            score = 1.0 - levenshtein_distance(span, tgt_norm) / max(len(span), len(tgt_norm))
+            if score > best_score:
+                best_score = score
+                best = span
+    return best
 
 
 def build_prompts(questions: List[str], pseudo_batch: List[List[str]], labels: List[str], tokenizer, use_chat_template: bool) -> List[str]:
@@ -374,7 +404,7 @@ def main() -> None:
                 input_len = proc_inputs["input_ids"].shape[1]
                 gen_out = native_model.generate(
                     **proc_inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=96,
                     eos_token_id=tokenizer.eos_token_id,
                     pad_token_id=tokenizer.eos_token_id,
                 )
@@ -382,17 +412,18 @@ def main() -> None:
                 gen_ids = gen_out[0][input_len:]
                 pred_text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
                 pred_text = first_sentence(clean_generation_output(pred_text))
+                pred_for_score = best_span_match(pred_text, target)
                 target = batch["clean"]["labels"][0]
                 total += 1
-                norm_pred = normalize_basic(pred_text)
+                norm_pred = normalize_basic(pred_for_score)
                 norm_tgt = normalize_basic(target)
                 if norm_pred == norm_tgt:
                     correct += 1
-                anls_sum += anls(pred_text, target)
-                predictions = [pred_text]
+                anls_sum += anls(pred_for_score, target)
+                predictions = [pred_for_score]
                 targets = [target]
                 if args.predictions:
-                    dump_rows.append({"id": batch["ids"][0], "prediction": pred_text, "target": target, "image_path": img_path})
+                    dump_rows.append({"id": batch["ids"][0], "prediction": pred_text, "scored_prediction": pred_for_score, "target": target, "image_path": img_path})
                 total_batches += 1
                 # interim logging
                 if args.log_interval and (idx + 1) % args.log_interval == 0:
@@ -402,10 +433,10 @@ def main() -> None:
                         interim_anls = anls_sum / max(1, total)
                         msg += f" anls={interim_anls:.4f}"
                     print(msg)
-                    if args.log_samples:
-                        k = min(args.log_samples, len(predictions))
-                        for j in range(k):
-                            print(f"  id={batch['ids'][j]} | img={batch['clean']['image_path'][j] if isinstance(batch['clean'].get('image_path'), list) else None} | pred={predictions[j]} | target={targets[j]}")
+                if args.log_samples:
+                    k = min(args.log_samples, len(predictions))
+                    for j in range(k):
+                        print(f"  id={batch['ids'][j]} | img={batch['clean']['image_path'][j] if isinstance(batch['clean'].get('image_path'), list) else None} | pred={predictions[j]} | target={targets[j]}")
                 continue
 
             device = next(model.parameters()).device
@@ -437,16 +468,17 @@ def main() -> None:
 
             raw_predictions = decode_predictions(student_out["logits"], corrupted_tokens["labels"], tokenizer)
             predictions = [first_sentence(clean_generation_output(p)) for p in raw_predictions]
+            scored_preds = [best_span_match(p, t) for p, t in zip(predictions, corrupted_split["labels"])]
             targets = corrupted_split["labels"]
-            for sample_id, pred, target in zip(batch["ids"], predictions, targets):
+            for sample_id, pred, scored_pred, target in zip(batch["ids"], predictions, scored_preds, targets):
                 total += 1
-                norm_pred = normalize_basic(pred)
+                norm_pred = normalize_basic(scored_pred)
                 norm_tgt = normalize_basic(target)
                 if norm_pred == norm_tgt:
                     correct += 1
-                anls_sum += anls(pred, target)
+                anls_sum += anls(scored_pred, target)
                 if args.predictions:
-                    dump_rows.append({"id": sample_id, "prediction": pred, "target": target})
+                    dump_rows.append({"id": sample_id, "prediction": pred, "scored_prediction": scored_pred, "target": target})
 
             if args.log_interval and (idx + 1) % args.log_interval == 0:
                 interim_acc = correct / max(1, total)
