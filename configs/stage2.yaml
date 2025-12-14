@@ -73,8 +73,8 @@ training:
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_stage2
   num_workers: 2
-  learning_rate: 0.0002
-  weight_decay: 0.05
+  learning_rate: 0.00005
+  weight_decay: 0.01
   warmup_ratio: 0.05
 evaluation:
   split: val

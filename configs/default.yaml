@@ -17,7 +17,7 @@ dataset:
       weight: 3
       apply_corruption: false
   eval_split: val
-  batch_size: 1          # 全精/长视觉下单卡 batch=1 更稳
+  batch_size: 1          # 全精/长视觉下单卡 batch=1
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
 model:
@@ -29,7 +29,7 @@ model:
   vision_tokens: 64           # 对齐官方长视觉序列
   load_in_4bit: false         # 关闭量化，避免精度差异
   load_in_8bit: false
-  device_map: auto            # 单进程下自动切分到可见 GPU，实现模型并行；多卡 DDP 时改为 null
+  device_map: null            # torchrun DDP 下设 null，避免进程重复切分
   gradient_checkpointing: false
   low_cpu_mem_usage: true
   provider: huggingface  # 本地路径也用 huggingface provider
@@ -55,9 +55,9 @@ training:
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_default
   num_workers: 2
-  learning_rate: 0.0002
-  weight_decay: 0.05
-  warmup_ratio: 0.05
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  warmup_ratio: 0.02
 evaluation:
   split: val
   apply_corruption: false

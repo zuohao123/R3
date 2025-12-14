@@ -62,7 +62,7 @@ model:
   enable_memory: true
   enable_imputation: true
   enable_consistency: true
-  lambda_consistency: 0.7     # 重度阶段提高一致性权重
+  lambda_consistency: 0.5     # 重度阶段适度提高一致性权重
   top_k: 3
 training:
   epochs: 1
@@ -73,8 +73,8 @@ training:
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_stage3
   num_workers: 2
-  learning_rate: 0.0002
-  weight_decay: 0.05
+  learning_rate: 0.00003
+  weight_decay: 0.01
   warmup_ratio: 0.05
 evaluation:
   split: val
