@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import inspect
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -30,7 +31,16 @@ from transformers import Trainer, TrainingArguments
 from transformers.trainer_callback import TrainerCallback
 from r3.retrieval_module import PseudoTextBuilder
 import torch.distributed as dist
+from accelerate import Accelerator
 
+# Patch accelerate unwrap_model signature for older versions (no keep_torch_compile)
+if "keep_torch_compile" not in inspect.signature(Accelerator.unwrap_model).parameters:
+    _orig_unwrap = Accelerator.unwrap_model
+
+    def _compat_unwrap(self, model, keep_fp32_wrapper=False, **kwargs):
+        return _orig_unwrap(self, model, keep_fp32_wrapper=keep_fp32_wrapper)
+
+    Accelerator.unwrap_model = _compat_unwrap
 
 class R3Dataset(Dataset):
     def __init__(
