@@ -47,7 +47,7 @@ model:
   vision_tokens: 64
   load_in_4bit: false
   load_in_8bit: false
-  device_map: null           # torchrun 下设 null，避免重复切分
+  device_map: auto           # torchrun 下 local_rank 映射单卡
   gradient_checkpointing: false
   low_cpu_mem_usage: true
   provider: huggingface

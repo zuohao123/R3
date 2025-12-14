@@ -29,7 +29,7 @@ model:
   vision_tokens: 64           # 对齐官方长视觉序列
   load_in_4bit: false         # 关闭量化，避免精度差异
   load_in_8bit: false
-  device_map: null            # torchrun DDP 下设 null，避免进程重复切分
+  device_map: auto            # torchrun DDP 下 local_rank 会映射到对应 GPU
   gradient_checkpointing: false
   low_cpu_mem_usage: true
   provider: huggingface  # 本地路径也用 huggingface provider
