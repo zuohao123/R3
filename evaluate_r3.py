@@ -166,14 +166,19 @@ def best_span_match(pred: str, target: str) -> str:
         return pred
     pred_tokens = pred_norm.split()
     tgt_tokens = tgt_norm.split()
-    min_len = max(1, int(len(tgt_tokens) * 0.5))
-    max_len = max(min_len, int(len(tgt_tokens) * 2))
+    min_len = max(1, len(tgt_tokens) - 1)
+    max_len = max(min_len, len(tgt_tokens) + 2)
+    tgt_set = set(tgt_tokens)
     best = pred_norm
     best_score = -1.0
     for i in range(len(pred_tokens)):
         for j in range(i + min_len, min(len(pred_tokens), i + max_len) + 1):
             span = " ".join(pred_tokens[i:j])
             if not span:
+                continue
+            span_tokens = span.split()
+            # Require at least one token overlap when possible
+            if tgt_set and not (tgt_set & set(span_tokens)):
                 continue
             score = 1.0 - levenshtein_distance(span, tgt_norm) / max(len(span), len(tgt_norm))
             if score > best_score:
@@ -395,16 +400,29 @@ def main() -> None:
                             img_path = str(c)
                             loaded = True
                             break
-                    if not loaded:
-                        print(f"[WARN] image not found for id={batch['ids'][0]} path={img_path}, tried {[str(c) for c in candidates]}; skip sample")
-                        continue
-                messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}]
+                if not loaded:
+                    print(f"[WARN] image not found for id={batch['ids'][0]} path={img_path}, tried {[str(c) for c in candidates]}; skip sample")
+                    continue
+                # Encourage short, direct answers
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image"},
+                            {"type": "text", "text": q + "\nPlease answer with the short answer only."},
+                        ],
+                    }
+                ]
                 prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 proc_inputs = processor(text=[prompt], images=[img], return_tensors="pt").to(native_model.device)
                 input_len = proc_inputs["input_ids"].shape[1]
                 gen_out = native_model.generate(
                     **proc_inputs,
                     max_new_tokens=96,
+                    do_sample=False,
+                    num_beams=1,
+                    temperature=0.0,
+                    top_p=1.0,
                     eos_token_id=tokenizer.eos_token_id,
                     pad_token_id=tokenizer.eos_token_id,
                 )
