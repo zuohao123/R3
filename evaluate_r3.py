@@ -412,7 +412,7 @@ def main() -> None:
             clean_split = batch["clean"]
             corrupted_split = batch["corrupted"]
             tokenizer = model.base_vlm.tokenizer
-            max_len = getattr(model.config, "max_seq_length", 1024)
+            max_len = getattr(model.config, "max_seq_length", 2048)
             from train_r3 import R3Trainer  # reuse vision utilities
 
             trainer_stub = R3Trainer(model=model, args=None, train_dataset=None, data_collator=None)
