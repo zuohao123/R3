@@ -645,7 +645,8 @@ def main() -> None:
                     )
                 gen_ids = gen[0][input_len:]
                 pred = self.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
-                self.logger.info(f"[quick_eval step={state.global_step}] q={q} | pred={pred} | img={img_path}")
+                tgt = clean.get("labels", [""])[0] if isinstance(clean.get("labels"), list) else ""
+                self.logger.info(f"[quick_eval step={state.global_step}] q={q} | pred={pred} | tgt={tgt} | img={img_path}")
             except Exception as e:
                 self.logger.warning(f"[quick_eval] failed: {e}")
             finally:
