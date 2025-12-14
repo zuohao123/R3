@@ -392,6 +392,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--log_file", type=Path, default=None, help="Optional path to save training logs.")
     parser.add_argument("--max_steps", type=int, default=None, help="Optional max training steps (overrides epochs).")
+    parser.add_argument("--quick_eval_every", type=int, default=None, help="If set, run a 1-sample quick eval every N logging events on rank0.")
     return parser.parse_args()
 
 
@@ -497,6 +498,8 @@ def main() -> None:
     else:
         train_dataset = build_single_dataset(dataset_section)
         logging.info("Single dataset initialized.")
+    # Cache one clean sample for quick eval
+    quick_eval_sample = collate_fn([train_dataset[0]]) if len(train_dataset) > 0 else None
 
     model_section = cfg.get("model", {})
     training_section = cfg.get("training", {})
@@ -558,12 +561,88 @@ def main() -> None:
         save_safetensors=False,  # avoid safetensors shared-memory save errors due to shared embeddings
     )
 
+    # Quick eval callback: runs on rank0 every N logging events if enabled
+    class QuickEvalCallback(TrainerCallback):
+        def __init__(self, sample: Optional[Dict], every: Optional[int], tokenizer, processor, logger):
+            self.sample = sample
+            self.every = every
+            self.tokenizer = tokenizer
+            self.processor = processor
+            self.logger = logger
+
+        def on_log(self, args, state, control, **kwargs):
+            if self.sample is None or self.every is None:
+                return
+            if state.global_step == 0 or state.global_step % self.every != 0:
+                return
+            # rank check
+            local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+            if local_rank not in (-1, 0):
+                return
+            model = kwargs.get("model", None)
+            if model is None:
+                return
+            model_was_training = model.training
+            model.eval()
+            try:
+                clean = self.sample["clean"]
+                q = clean["question"][0]
+                img = clean["images"][0] if clean["images"][0] is not None else None
+                img_path = None
+                if img is None:
+                    paths = clean.get("image_path")
+                    if isinstance(paths, list) and paths and paths[0]:
+                        from PIL import Image
+                        img_path = paths[0]
+                        img = Image.open(img_path).convert("RGB")
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image"}, {"type": "text", "text": q + "\nPlease answer with the short answer only."}],
+                    }
+                ]
+                prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                inputs = self.processor(text=[prompt], images=[img], return_tensors="pt").to(model.device)
+                input_len = inputs["input_ids"].shape[1]
+                with torch.no_grad():
+                    gen = model.base_vlm.model.generate(  # type: ignore
+                        **inputs,
+                        max_new_tokens=64,
+                        do_sample=False,
+                        num_beams=1,
+                        temperature=0.0,
+                        top_p=1.0,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                        pad_token_id=self.tokenizer.eos_token_id,
+                    )
+                gen_ids = gen[0][input_len:]
+                pred = self.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+                self.logger.info(f"[quick_eval step={state.global_step}] q={q} | pred={pred} | img={img_path}")
+            except Exception as e:
+                self.logger.warning(f"[quick_eval] failed: {e}")
+            finally:
+                if model_was_training:
+                    model.train()
+
+    callbacks = [CurriculumScheduler(), LossLogger(logging.getLogger())]
+    # build quick eval callback
+    if args.quick_eval_every is not None and quick_eval_sample is not None and hasattr(model, "base_vlm"):
+        callbacks.append(
+            QuickEvalCallback(
+                sample=quick_eval_sample,
+                every=args.quick_eval_every,
+                tokenizer=model.base_vlm.tokenizer,
+                processor=model.base_vlm.processor,
+                logger=logging.getLogger(),
+            )
+        )
+
     trainer = R3Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         data_collator=collate_fn,
-        callbacks=[CurriculumScheduler(), LossLogger(logging.getLogger())],
+        callbacks=callbacks,
     )
     logging.info("Starting training for %s epochs", training_args.num_train_epochs)
     trainer.train()
