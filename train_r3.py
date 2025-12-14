@@ -18,6 +18,14 @@ import torch
 import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader, Dataset
+if not hasattr(torch, "compiler"):
+    class _DummyCompiler:
+        @staticmethod
+        def is_compiling():
+            return False
+    torch.compiler = _DummyCompiler()  # type: ignore[attr-defined]
+elif not hasattr(torch.compiler, "is_compiling"):  # type: ignore[attr-defined]
+    torch.compiler.is_compiling = lambda: False  # type: ignore[attr-defined]
 
 from data_pipeline.datasets import BasePMCDataset, create_dataset, detect_dataset_type
 from data_pipeline.corruptions import (
