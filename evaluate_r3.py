@@ -414,6 +414,7 @@ def main() -> None:
                 pred_text = first_sentence(clean_generation_output(pred_text))
                 target = batch["clean"]["labels"][0]
                 pred_for_score = best_span_match(pred_text, target)
+                raw_preds = [pred_text]
                 total += 1
                 norm_pred = normalize_basic(pred_for_score)
                 norm_tgt = normalize_basic(target)
@@ -423,7 +424,15 @@ def main() -> None:
                 predictions = [pred_for_score]
                 targets = [target]
                 if args.predictions:
-                    dump_rows.append({"id": batch["ids"][0], "prediction": pred_text, "scored_prediction": pred_for_score, "target": target, "image_path": img_path})
+                    dump_rows.append(
+                        {
+                            "id": batch["ids"][0],
+                            "prediction": pred_text,
+                            "scored_prediction": pred_for_score,
+                            "target": target,
+                            "image_path": img_path,
+                        }
+                    )
                 total_batches += 1
                 # interim logging
                 if args.log_interval and (idx + 1) % args.log_interval == 0:
@@ -433,10 +442,13 @@ def main() -> None:
                         interim_anls = anls_sum / max(1, total)
                         msg += f" anls={interim_anls:.4f}"
                     print(msg)
-                if args.log_samples:
-                    k = min(args.log_samples, len(predictions))
-                    for j in range(k):
-                        print(f"  id={batch['ids'][j]} | img={batch['clean']['image_path'][j] if isinstance(batch['clean'].get('image_path'), list) else None} | pred={predictions[j]} | target={targets[j]}")
+                    if args.log_samples:
+                        k = min(args.log_samples, len(predictions))
+                        for j in range(k):
+                            print(
+                                f"  id={batch['ids'][j]} | img={batch['clean']['image_path'][j] if isinstance(batch['clean'].get('image_path'), list) else None} "
+                                f"| pred_raw={raw_preds[j]} | pred_scored={predictions[j]} | target={targets[j]}"
+                            )
                 continue
 
             device = next(model.parameters()).device
@@ -470,7 +482,7 @@ def main() -> None:
             predictions = [first_sentence(clean_generation_output(p)) for p in raw_predictions]
             scored_preds = [best_span_match(p, t) for p, t in zip(predictions, corrupted_split["labels"])]
             targets = corrupted_split["labels"]
-            for sample_id, pred, scored_pred, target in zip(batch["ids"], predictions, scored_preds, targets):
+            for sample_id, pred_raw, scored_pred, target in zip(batch["ids"], predictions, scored_preds, targets):
                 total += 1
                 norm_pred = normalize_basic(scored_pred)
                 norm_tgt = normalize_basic(target)
@@ -478,7 +490,9 @@ def main() -> None:
                     correct += 1
                 anls_sum += anls(scored_pred, target)
                 if args.predictions:
-                    dump_rows.append({"id": sample_id, "prediction": pred, "scored_prediction": scored_pred, "target": target})
+                    dump_rows.append(
+                        {"id": sample_id, "prediction": pred_raw, "scored_prediction": scored_pred, "target": target}
+                    )
 
             if args.log_interval and (idx + 1) % args.log_interval == 0:
                 interim_acc = correct / max(1, total)
@@ -493,7 +507,9 @@ def main() -> None:
                         img_path = None
                         if isinstance(corrupted_split.get("image_path"), list) and j < len(corrupted_split["image_path"]):
                             img_path = corrupted_split["image_path"][j]
-                        print(f"  id={batch['ids'][j]} | img={img_path} | pred={predictions[j]} | target={targets[j]}")
+                        print(
+                            f"  id={batch['ids'][j]} | img={img_path} | pred_raw={predictions[j]} | pred_scored={scored_preds[j]} | target={targets[j]}"
+                        )
 
     avg_loss = total_loss / max(1, total_batches)
     accuracy = correct / max(1, total)
