@@ -412,8 +412,8 @@ def main() -> None:
                 gen_ids = gen_out[0][input_len:]
                 pred_text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
                 pred_text = first_sentence(clean_generation_output(pred_text))
-                pred_for_score = best_span_match(pred_text, target)
                 target = batch["clean"]["labels"][0]
+                pred_for_score = best_span_match(pred_text, target)
                 total += 1
                 norm_pred = normalize_basic(pred_for_score)
                 norm_tgt = normalize_basic(target)
