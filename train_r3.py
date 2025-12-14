@@ -411,6 +411,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log_file", type=Path, default=None, help="Optional path to save training logs.")
     parser.add_argument("--max_steps", type=int, default=None, help="Optional max training steps (overrides epochs).")
     parser.add_argument("--quick_eval_every", type=int, default=None, help="If set, run a 1-sample quick eval every N logging events on rank0.")
+    parser.add_argument("--log_interval", type=int, default=None, help="Override training.log_interval for logging_steps.")
     return parser.parse_args()
 
 
@@ -521,6 +522,8 @@ def main() -> None:
 
     model_section = cfg.get("model", {})
     training_section = cfg.get("training", {})
+    if args.log_interval is not None:
+        training_section["log_interval"] = args.log_interval
     model_cfg = R3ModelConfig(
         model_name=model_section.get("name", "Qwen/Qwen3-VL-8B-Instruct"),
         lora_rank=model_section.get("lora_rank", 32),
