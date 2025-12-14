@@ -551,6 +551,15 @@ def main() -> None:
     logging.info("Loading model: %s (provider=%s)", model_cfg.model_name, model_cfg.provider)
     model = R3Model(model_cfg)
     logging.info("Model initialized with backbone %s", model_cfg.model_name)
+    # Mark as model-parallel if hf_device_map exists to prevent Trainer from moving to a single GPU
+    try:
+        if hasattr(model, "base_vlm") and hasattr(model.base_vlm.model, "hf_device_map"):
+            model.is_model_parallel = True
+            model.is_parallelizable = True
+            model.model_parallel = True
+            model.hf_device_map = model.base_vlm.model.hf_device_map
+    except Exception:
+        pass
     if hasattr(model, "base_vlm") and hasattr(model.base_vlm, "model") and hasattr(model.base_vlm.model, "config"):
         model.base_vlm.model.config.use_cache = False
         if hasattr(model.base_vlm.model, "gradient_checkpointing_disable"):
@@ -577,7 +586,7 @@ def main() -> None:
         ddp_find_unused_parameters=False if ddp else None,
         ddp_backend="nccl" if ddp else None,
         save_safetensors=False,  # avoid safetensors shared-memory save errors due to shared embeddings
-        place_model_on_device=False,  # respect device_map (model parallel) and avoid moving whole model to a single GPU
+        # place_model_on_device not available in this transformers version; we rely on model.hf_device_map
     )
 
     # Quick eval callback: runs on rank0 every N logging events if enabled
