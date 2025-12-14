@@ -660,7 +660,14 @@ def main() -> None:
                     }
                 ]
                 prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                inputs = self.processor(text=[prompt], images=[img], return_tensors="pt").to(model.device)
+                # fall back to first param device if model has no .device attr
+                dev = getattr(model, "device", None)
+                if dev is None:
+                    try:
+                        dev = next(model.parameters()).device
+                    except Exception:
+                        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                inputs = self.processor(text=[prompt], images=[img], return_tensors="pt").to(dev)
                 input_len = inputs["input_ids"].shape[1]
                 with torch.no_grad():
                     gen = model.base_vlm.model.generate(  # type: ignore
