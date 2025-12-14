@@ -35,7 +35,7 @@ dataset:
         blur_prob: 0.4
         blur_radius: 3.0
   eval_split: val
-  batch_size: 1
+  batch_size: 2
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl
 model:
@@ -68,7 +68,7 @@ training:
   epochs: 1
   log_interval: 10
   fp16: false
-  grad_accum_steps: 16
+  grad_accum_steps: 12
   grad_checkpoint: false  # 遇到 dtype/backward 问题，先关闭
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_stage2
