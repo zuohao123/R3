@@ -521,7 +521,7 @@ def main() -> None:
     quick_eval_sample = None
     if len(train_dataset) > 0:
         quick_idx = random.randint(0, len(train_dataset) - 1)
-        quick_eval_sample = collate_fn([train_dataset[quick_idx]])
+        quick_eval_sample = {"idx": quick_idx, "batch": collate_fn([train_dataset[quick_idx]])}
 
     model_section = cfg.get("model", {})
     training_section = cfg.get("training", {})
@@ -582,6 +582,7 @@ def main() -> None:
         weight_decay=training_section.get("weight_decay", 0.05),
         logging_steps=training_section.get("log_interval", 10),
         warmup_ratio=training_section.get("warmup_ratio", 0.05),
+        lr_scheduler_type=training_section.get("lr_scheduler_type", "linear"),
         report_to=training_section.get("report_to", "tensorboard"),
         logging_dir=str(training_section.get("logging_dir", args.output_dir / "logs")),
         remove_unused_columns=False,
@@ -598,14 +599,14 @@ def main() -> None:
     # Quick eval callback: runs on rank0 every N logging events if enabled
     class QuickEvalCallback(TrainerCallback):
         def __init__(self, sample: Optional[Dict], every: Optional[int], tokenizer, processor, logger):
-            self.sample = sample
+            self.sample_info = sample
             self.every = every
             self.tokenizer = tokenizer
             self.processor = processor
             self.logger = logger
 
         def on_log(self, args, state, control, **kwargs):
-            if self.sample is None or self.every is None:
+            if self.sample_info is None or self.every is None:
                 return
             if state.global_step == 0 or state.global_step % self.every != 0:
                 return
@@ -619,7 +620,7 @@ def main() -> None:
             model_was_training = model.training
             model.eval()
             try:
-                clean = self.sample["clean"]
+                clean = self.sample_info["batch"]["clean"]
                 q = clean["question"][0]
                 img = clean["images"][0] if clean["images"][0] is not None else None
                 img_path = None
@@ -686,7 +687,7 @@ def main() -> None:
                 gen_ids = gen[0][input_len:]
                 pred = self.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
                 tgt = clean.get("labels", [""])[0] if isinstance(clean.get("labels"), list) else ""
-                self.logger.info(f"[quick_eval step={state.global_step}] q={q} | pred={pred} | tgt={tgt} | img={img_path}")
+                self.logger.info(f"[quick_eval step={state.global_step}] idx={self.sample_info.get('idx')} | q={q} | pred={pred} | tgt={tgt} | img={img_path}")
             except Exception as e:
                 self.logger.warning(f"[quick_eval] failed: {e}")
             finally:
