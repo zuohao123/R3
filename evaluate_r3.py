@@ -156,6 +156,46 @@ def normalize_basic(text: str) -> str:
     return t
 
 
+def _to_number(text: str) -> Optional[float]:
+    """
+    Try to parse a float from normalized text by stripping $, commas, and spaces.
+    """
+    try:
+        cleaned = text.replace("$", "").replace(",", "").strip()
+        return float(cleaned)
+    except Exception:
+        return None
+
+
+def numbers_close(a: float, b: float) -> bool:
+    """
+    Consider numbers equal if rounding to 2 decimals matches, or relative diff < 0.5% or abs diff < 0.05.
+    """
+    if round(a, 2) == round(b, 2):
+        return True
+    diff = abs(a - b)
+    if abs(b) > 1e-6 and diff / abs(b) < 0.005:
+        return True
+    return diff < 0.05
+
+
+def is_correct(pred: str, target: str) -> bool:
+    """
+    Flexible exact match:
+    1) normalized string equality
+    2) numeric closeness (currency/decimal tolerance)
+    """
+    norm_pred = normalize_basic(pred)
+    norm_tgt = normalize_basic(target)
+    if norm_pred == norm_tgt:
+        return True
+    num_p = _to_number(norm_pred)
+    num_t = _to_number(norm_tgt)
+    if num_p is not None and num_t is not None:
+        return numbers_close(num_p, num_t)
+    return False
+
+
 def best_span_match(pred: str, target: str) -> str:
     """
     For short answers (DocVQA/Chart/Info), pick a subspan of pred that best matches target
@@ -436,9 +476,7 @@ def main() -> None:
                 pred_for_score = best_span_match(pred_text, target)
                 raw_preds = [pred_text]
                 total += 1
-                norm_pred = normalize_basic(pred_for_score)
-                norm_tgt = normalize_basic(target)
-                if norm_pred == norm_tgt:
+                if is_correct(pred_for_score, target):
                     correct += 1
                 anls_sum += anls(pred_for_score, target)
                 predictions = [pred_for_score]
@@ -453,7 +491,7 @@ def main() -> None:
                             "image_path": img_path,
                         }
                     )
-                if norm_pred != norm_tgt and args.errors is not None:
+                if not is_correct(pred_for_score, target) and args.errors is not None:
                     error_rows.append(
                         {
                             "id": batch["ids"][0],
@@ -514,16 +552,14 @@ def main() -> None:
             targets = corrupted_split["labels"]
             for sample_id, pred_raw, scored_pred, target in zip(batch["ids"], predictions, scored_preds, targets):
                 total += 1
-                norm_pred = normalize_basic(scored_pred)
-                norm_tgt = normalize_basic(target)
-                if norm_pred == norm_tgt:
+                if is_correct(scored_pred, target):
                     correct += 1
                 anls_sum += anls(scored_pred, target)
                 if args.predictions:
                     dump_rows.append(
                         {"id": sample_id, "prediction": pred_raw, "scored_prediction": scored_pred, "target": target}
                     )
-                if norm_pred != norm_tgt and args.errors is not None:
+                if not is_correct(scored_pred, target) and args.errors is not None:
                     err_img = None
                     if isinstance(corrupted_split.get("image_path"), list) and j < len(corrupted_split["image_path"]):
                         err_img = corrupted_split["image_path"][j]
