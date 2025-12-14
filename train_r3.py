@@ -555,9 +555,6 @@ def main() -> None:
         model.base_vlm.model.config.use_cache = False
         if hasattr(model.base_vlm.model, "gradient_checkpointing_disable"):
             model.base_vlm.model.gradient_checkpointing_disable()
-    # Ensure custom heads match backbone dtype to avoid half/float mismatch
-    if training_section.get("fp16", False):
-        model = model.half()
 
     ddp = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     training_args = TrainingArguments(

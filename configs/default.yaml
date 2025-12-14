@@ -49,7 +49,7 @@ model:
 training:
   epochs: 1
   log_interval: 10
-  fp16: true             # 全精 fp16 训练
+  fp16: false            # 关闭 AMP，使用 fp32 稳定对齐基座
   grad_accum_steps: 16   # batch=1 时累积以控制显存，全局等效 batch≈16*卡数
   grad_checkpoint: false  # 先关闭以规避 dtype/backward 问题，显存不足再开启
   report_to: tensorboard

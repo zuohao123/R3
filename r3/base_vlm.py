@@ -60,7 +60,7 @@ class BaseVLM(torch.nn.Module):
         if config.load_in_4bit or config.load_in_8bit:
             torch_dtype = torch.float32
         else:
-            torch_dtype = torch.bfloat16 if config.bf16 else torch.float16
+            torch_dtype = torch.bfloat16 if config.bf16 else torch.float32
         config_obj = AutoConfig.from_pretrained(model_path, **hf_kwargs)
         backbone = self._load_backbone(model_path, config_obj, torch_dtype, hf_kwargs)
 

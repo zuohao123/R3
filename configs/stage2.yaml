@@ -67,7 +67,7 @@ model:
 training:
   epochs: 1
   log_interval: 10
-  fp16: true
+  fp16: false
   grad_accum_steps: 16
   grad_checkpoint: false  # 遇到 dtype/backward 问题，先关闭
   report_to: tensorboard

@@ -14,9 +14,9 @@
 
 核心超参（已写入 configs）：
 - batch_per_gpu=1，grad_accum=16（全局≈64）。
-- fp16，vision_tokens=64，全精无量化。
+- fp16 关闭（fp32 训练以稳定对齐基座），vision_tokens=64，全精无量化。
 - lr：Stage1 1e-4；Stage2 5e-5；Stage3 3e-5；wd=0.01；warmup 2%/5%。
-- device_map=null（torchrun DDP），no grad checkpoint（显存不足再开）。
+- device_map=auto（torchrun DDP），no grad checkpoint（显存不足再开）。
 
 ## 命令大表
 
