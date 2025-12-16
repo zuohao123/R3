@@ -6,34 +6,34 @@ dataset:
       split: train
       weight: 4
       apply_corruption: true
-      pseudo_text_drop_prob: 0.3
+      pseudo_text_drop_prob: 1.0
       image_corruption:
-        occlusion_prob: 0.6
-        occlusion_ratio: 0.3
-        blur_prob: 0.6
-        blur_radius: 4.0
+        occlusion_prob: 1.0
+        occlusion_ratio: 0.5
+        blur_prob: 1.0
+        blur_radius: 5.0
     - root: ./data_pipeline/data/infovqa
       type: infovqa
       split: train
       weight: 3
       apply_corruption: true
-      pseudo_text_drop_prob: 0.3
+      pseudo_text_drop_prob: 1.0
       image_corruption:
-        occlusion_prob: 0.6
-        occlusion_ratio: 0.3
-        blur_prob: 0.6
-        blur_radius: 4.0
+        occlusion_prob: 1.0
+        occlusion_ratio: 0.5
+        blur_prob: 1.0
+        blur_radius: 5.0
     - root: ./data_pipeline/data/chartqa
       type: chartqa
       split: train
       weight: 3
       apply_corruption: true
-      pseudo_text_drop_prob: 0.3
+      pseudo_text_drop_prob: 1.0
       image_corruption:
-        occlusion_prob: 0.6
-        occlusion_ratio: 0.3
-        blur_prob: 0.6
-        blur_radius: 4.0
+        occlusion_prob: 1.0
+        occlusion_ratio: 0.5
+        blur_prob: 1.0
+        blur_radius: 5.0
   eval_split: val
   batch_size: 4
   num_workers: 2
