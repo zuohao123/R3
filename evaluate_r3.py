@@ -420,10 +420,12 @@ def main() -> None:
     with torch.no_grad():
         for idx, batch in enumerate(tqdm(dataloader, desc="eval", total=len(dataloader))):
             if args.native_eval:
-                # Expect batch_size=1
-                q = batch["clean"]["question"][0]
-                img = batch["clean"]["images"][0] if batch["clean"]["images"][0] is not None else None
-                img_path = batch["clean"]["image_path"][0] if isinstance(batch["clean"].get("image_path"), list) else None
+                # Expect batch_size=1; use corrupted split when apply_corruption is enabled
+                split_key = "corrupted" if apply_corruption else "clean"
+                split_data = batch[split_key]
+                q = split_data["question"][0]
+                img = split_data["images"][0] if split_data["images"][0] is not None else None
+                img_path = split_data["image_path"][0] if isinstance(split_data.get("image_path"), list) else None
                 if img is None and img_path:
                     from PIL import Image
                     cand = Path(img_path)
