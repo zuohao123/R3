@@ -4,6 +4,7 @@ Base VLM wrapper around Qwen3-VL style backbones.
 from __future__ import annotations
 
 import os
+import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 from pathlib import Path
@@ -21,6 +22,8 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -99,9 +102,13 @@ class BaseVLM(torch.nn.Module):
         if self.processor is None:
             raise RuntimeError("No processor available for image encoding; ensure base model provides vision processor.")
         pil_images = [self._to_image(img) for img in images]
-        # Qwen3-VL processor expects paired text; provide empty prompts to avoid NoneType errors.
-        dummy_text = [""] * len(pil_images)
-        inputs = self.processor(images=pil_images, text=dummy_text, return_tensors="pt")
+
+        def _run_processor(pils: List[Image.Image]):
+            # Qwen3-VL processor expects paired text; provide empty prompts to avoid NoneType errors.
+            dummy_text = [""] * len(pils)
+            return self.processor(images=pils, text=dummy_text, return_tensors="pt")
+
+        inputs = _run_processor(pil_images)
         pixel_values = inputs.get("pixel_values")
         if pixel_values is None:
             pixel_values = inputs.get("images")
@@ -119,15 +126,66 @@ class BaseVLM(torch.nn.Module):
                 vision_dtype = self.model.get_input_embeddings().weight.dtype
             except Exception:
                 vision_dtype = torch.float16
-        pixel_values = pixel_values.to(device=device, dtype=vision_dtype)
+        pixel_values = pixel_values.to(device=device, dtype=vision_dtype).contiguous()
 
         grid_thw = inputs.get("image_grid_thw")
         if grid_thw is None:
             grid_thw = inputs.get("grid_thw")
         if grid_thw is not None:
-            grid_thw = grid_thw.to(device=device)
+            grid_thw = grid_thw.to(device=device).contiguous()
 
-        vision_hidden = self._forward_vision(pixel_values, grid_thw=grid_thw)
+        try:
+            vision_hidden = self._forward_vision(pixel_values, grid_thw=grid_thw)
+        except RuntimeError as exc:
+            msg = str(exc)
+            # cuDNN sometimes throws INTERNAL_ERROR for large/odd-shaped 3D conv workloads or
+            # transient workspace allocation failures. Retry with cudnn disabled (slower but stable),
+            # then (optionally) with a safety resize. If all retries fail, return zeros so training can continue.
+            if "CUDNN_STATUS_INTERNAL_ERROR" in msg or "cuDNN error" in msg:
+                logger.warning("Vision forward hit cuDNN error; retrying with cudnn disabled. err=%s", msg)
+                try:
+                    with torch.backends.cudnn.flags(enabled=False):
+                        vision_hidden = self._forward_vision(pixel_values, grid_thw=grid_thw)
+                except Exception:
+                    # Downscale extremely large images then retry once with cudnn disabled.
+                    max_pixels = 1024 * 1024  # keep reasonably high-res for documents
+                    resized: List[Image.Image] = []
+                    for im in pil_images:
+                        w, h = im.size
+                        if w * h <= max_pixels:
+                            resized.append(im)
+                            continue
+                        scale = (max_pixels / float(w * h)) ** 0.5
+                        new_w = max(1, int(w * scale))
+                        new_h = max(1, int(h * scale))
+                        resized.append(im.resize((new_w, new_h)))
+                    try:
+                        inputs2 = _run_processor(resized)
+                        pv2 = inputs2.get("pixel_values")
+                        if pv2 is None:
+                            pv2 = inputs2.get("images")
+                        if pv2 is None:
+                            raise ValueError("Processor did not return pixel_values on retry.")
+                        pv2 = pv2.to(device=device, dtype=vision_dtype).contiguous()
+                        g2 = inputs2.get("image_grid_thw")
+                        if g2 is None:
+                            g2 = inputs2.get("grid_thw")
+                        if g2 is not None:
+                            g2 = g2.to(device=device).contiguous()
+                        with torch.backends.cudnn.flags(enabled=False):
+                            vision_hidden = self._forward_vision(pv2, grid_thw=g2)
+                    except Exception as exc2:
+                        logger.error(
+                            "Vision encoding failed after retries; returning zero embeddings to keep training running. err=%s",
+                            exc2,
+                        )
+                        return torch.zeros(
+                            (len(pil_images), vision_tokens, hidden_size),
+                            device=device,
+                            dtype=torch.float16,
+                        )
+            else:
+                raise
         # If the vision tower lives on a different device under `device_map="auto"`,
         # _forward_vision may have executed on that device; bring features back.
         if vision_hidden.device != device:
