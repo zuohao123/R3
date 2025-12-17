@@ -411,6 +411,29 @@ class R3Trainer(Trainer):
             return total_loss, outputs
         return total_loss
 
+    def _save(self, output_dir: str | os.PathLike, state_dict=None):
+        """
+        Override HF Trainer saving to avoid `safetensors` failures when the model contains
+        shared tensors (e.g., retrieval module reusing the backbone embedding layer).
+
+        We always save a standard `pytorch_model.bin` via `torch.save`, which supports shared storage.
+        """
+        if not self.is_world_process_zero():
+            return
+        os.makedirs(output_dir, exist_ok=True)
+        model_to_save = self.model.module if hasattr(self.model, "module") else self.model
+        if state_dict is None:
+            state_dict = model_to_save.state_dict()
+        torch.save(state_dict, os.path.join(output_dir, "pytorch_model.bin"))
+        # Save a lightweight config snapshot for reproducibility.
+        try:
+            cfg = getattr(model_to_save, "config", None)
+            if cfg is not None and hasattr(cfg, "to_json_string"):
+                with open(os.path.join(output_dir, "r3_config.json"), "w", encoding="utf-8") as f:
+                    f.write(cfg.to_json_string())
+        except Exception:
+            pass
+
     @staticmethod
     def _causal_ce(logits: torch.Tensor, labels: torch.Tensor, vision_tokens: int = 0) -> torch.Tensor:
         """

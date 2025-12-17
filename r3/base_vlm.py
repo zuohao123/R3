@@ -142,7 +142,15 @@ class BaseVLM(torch.nn.Module):
             # transient workspace allocation failures. Retry with cudnn disabled (slower but stable),
             # then (optionally) with a safety resize. If all retries fail, return zeros so training can continue.
             if "CUDNN_STATUS_INTERNAL_ERROR" in msg or "cuDNN error" in msg:
-                logger.warning("Vision forward hit cuDNN error; retrying with cudnn disabled. err=%s", msg)
+                try:
+                    size_str = ",".join([f"{im.size[0]}x{im.size[1]}" for im in pil_images[:3]])
+                except Exception:
+                    size_str = "unknown"
+                logger.warning(
+                    "Vision forward hit cuDNN error; retrying with cudnn disabled. err=%s | img_sizes=%s",
+                    msg,
+                    size_str,
+                )
                 try:
                     with torch.backends.cudnn.flags(enabled=False):
                         vision_hidden = self._forward_vision(pixel_values, grid_thw=grid_thw)
@@ -175,10 +183,29 @@ class BaseVLM(torch.nn.Module):
                         with torch.backends.cudnn.flags(enabled=False):
                             vision_hidden = self._forward_vision(pv2, grid_thw=g2)
                     except Exception as exc2:
-                        logger.error(
-                            "Vision encoding failed after retries; returning zero embeddings to keep training running. err=%s",
-                            exc2,
-                        )
+                        try:
+                            if isinstance(device, torch.device) and device.type == "cuda":
+                                alloc_gb = torch.cuda.memory_allocated(device) / (1024**3)
+                                reserved_gb = torch.cuda.memory_reserved(device) / (1024**3)
+                                logger.error(
+                                    "Vision encoding failed after retries; returning zero embeddings to keep training running. err=%s | cuda_alloc=%.2fGiB cuda_reserved=%.2fGiB | img_sizes=%s",
+                                    exc2,
+                                    alloc_gb,
+                                    reserved_gb,
+                                    size_str,
+                                )
+                                # Best-effort cleanup to reduce fragmentation for subsequent batches.
+                                torch.cuda.empty_cache()
+                            else:
+                                logger.error(
+                                    "Vision encoding failed after retries; returning zero embeddings to keep training running. err=%s",
+                                    exc2,
+                                )
+                        except Exception:
+                            logger.error(
+                                "Vision encoding failed after retries; returning zero embeddings to keep training running. err=%s",
+                                exc2,
+                            )
                         return torch.zeros(
                             (len(pil_images), vision_tokens, hidden_size),
                             device=device,

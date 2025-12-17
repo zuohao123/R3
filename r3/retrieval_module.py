@@ -101,7 +101,10 @@ class PseudoTextRetrievalModule(nn.Module):
     def __init__(self, config: RetrievalModuleConfig, embedding_layer: nn.Embedding) -> None:
         super().__init__()
         self.config = config
-        self.embedding_layer = embedding_layer
+        # NOTE: The embedding layer is owned by the backbone LM. Do NOT register it as a child module here,
+        # otherwise it appears twice in the top-level state_dict (shared tensor), and safetensors will
+        # refuse to save checkpoints. Keep a plain reference instead.
+        self._embedding_layer = embedding_layer
         self.query_proj = nn.Linear(config.hidden_size, config.hidden_size)
         self.evidence_proj = nn.Linear(config.hidden_size, config.hidden_size)
         self.scorer = nn.Linear(config.hidden_size, 1)
@@ -184,14 +187,20 @@ class PseudoTextRetrievalModule(nn.Module):
                 if not text:
                     continue
                 tokens = torch.tensor(
-                    [hash(text) % self.embedding_layer.num_embeddings],
+                    [hash(text) % self._embedding_layer.num_embeddings],
                     device=device,
                 )
-                vec = self.embedding_layer(tokens)
+                vec = self._embedding_layer(tokens)
                 encoded_entries.append(vec.mean(dim=0))
                 stored_texts.append(text)
             if not encoded_entries:
-                encoded_entries = [torch.zeros(self.config.hidden_size, device=device, dtype=self.embedding_layer.weight.dtype)]
+                encoded_entries = [
+                    torch.zeros(
+                        self.config.hidden_size,
+                        device=device,
+                        dtype=self._embedding_layer.weight.dtype,
+                    )
+                ]
                 stored_texts.append("")
             embeddings.append(torch.stack(encoded_entries))
             texts.append(stored_texts)
@@ -283,11 +292,11 @@ class PseudoTextRetrievalModule(nn.Module):
         unique_texts = [t for t in texts if t]
         if not unique_texts:
             return
-        device = next(self.embedding_layer.parameters()).device
+        device = next(self._embedding_layer.parameters()).device
         vectors = []
         for text in unique_texts:
-            token = torch.tensor([hash(text) % self.embedding_layer.num_embeddings], device=device)
-            vec = self.embedding_layer(token).mean(dim=0)
+            token = torch.tensor([hash(text) % self._embedding_layer.num_embeddings], device=device)
+            vec = self._embedding_layer(token).mean(dim=0)
             vectors.append(vec)
         self.external_embeddings = torch.stack(vectors).unsqueeze(0).unsqueeze(2)  # (1, evidences, 1, dim)
         self.external_texts = unique_texts
