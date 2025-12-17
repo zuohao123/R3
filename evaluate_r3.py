@@ -426,6 +426,9 @@ def main() -> None:
                 q = split_data["question"][0]
                 img = split_data["images"][0] if split_data["images"][0] is not None else None
                 img_path = split_data["image_path"][0] if isinstance(split_data.get("image_path"), list) else None
+                # Debug: show whether corrupted images are present
+                if idx == 0 and args.log_samples:
+                    print(f"[debug] split={split_key} img_type={type(img)} img_path={img_path}")
                 if img is None and img_path:
                     from PIL import Image
                     cand = Path(img_path)
