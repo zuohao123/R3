@@ -29,6 +29,9 @@ class BaseVLMConfig:
     lora_rank: int = 32
     lora_alpha: int = 16
     bf16: bool = True
+    # Load backbone weights dtype. Options: "auto" (bf16->bf16 else fp32), "fp16", "fp32", "bf16".
+    # Note: V100 does not support bf16; for 8×V100 DDP we recommend fp16 here.
+    dtype: str = "auto"
     load_in_4bit: bool = False
     load_in_8bit: bool = False
     device_map: Optional[str | Dict] = None
@@ -56,11 +59,7 @@ class BaseVLM(torch.nn.Module):
             self.processor = AutoProcessor.from_pretrained(tokenizer_source, **hf_kwargs)
         except Exception:
             self.processor = None
-        # For quantized loading, keep computation in float32 to avoid half/float mismatch.
-        if config.load_in_4bit or config.load_in_8bit:
-            torch_dtype = torch.float32
-        else:
-            torch_dtype = torch.bfloat16 if config.bf16 else torch.float32
+        torch_dtype = self._resolve_torch_dtype(config)
         config_obj = AutoConfig.from_pretrained(model_path, **hf_kwargs)
         backbone = self._load_backbone(model_path, config_obj, torch_dtype, hf_kwargs)
 
@@ -108,7 +107,19 @@ class BaseVLM(torch.nn.Module):
             pixel_values = inputs.get("images")
         if pixel_values is None:
             raise ValueError("Processor did not return pixel_values for vision encoding.")
-        pixel_values = pixel_values.to(device=device, dtype=self.model.dtype)
+        # Cast pixels to the vision tower dtype (not self.model.dtype) to avoid accidental fp32
+        # when LoRA/R³ params are fp32.
+        vision_mod = self._locate_vision_module(self.model)
+        try:
+            vision_dtype = next(vision_mod.parameters()).dtype if vision_mod is not None else None
+        except Exception:
+            vision_dtype = None
+        if vision_dtype is None:
+            try:
+                vision_dtype = self.model.get_input_embeddings().weight.dtype
+            except Exception:
+                vision_dtype = torch.float16
+        pixel_values = pixel_values.to(device=device, dtype=vision_dtype)
 
         grid_thw = inputs.get("image_grid_thw")
         if grid_thw is None:
@@ -285,7 +296,27 @@ class BaseVLM(torch.nn.Module):
         )
         model = get_peft_model(model, lora_config)
         model.resize_token_embeddings(len(self.tokenizer))
+        # Keep all trainable params in fp32 so AMP/GradScaler won't hit
+        # "Attempting to unscale FP16 gradients." when the backbone is fp16.
+        for p in model.parameters():
+            if p.requires_grad and p.dtype != torch.float32:
+                p.data = p.data.float()
         return model
+
+    @staticmethod
+    def _resolve_torch_dtype(config: BaseVLMConfig) -> torch.dtype:
+        # For quantized loading, keep computation in float32 to avoid half/float mismatch.
+        if config.load_in_4bit or config.load_in_8bit:
+            return torch.float32
+        dtype = (config.dtype or "auto").lower()
+        if dtype in ("fp16", "float16", "half"):
+            return torch.float16
+        if dtype in ("bf16", "bfloat16"):
+            return torch.bfloat16
+        if dtype in ("fp32", "float32", "full"):
+            return torch.float32
+        # auto: keep previous behavior
+        return torch.bfloat16 if config.bf16 else torch.float32
 
     def _ensure_input_embeddings(self, model):
         """

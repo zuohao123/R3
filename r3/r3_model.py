@@ -22,6 +22,8 @@ class R3ModelConfig:
     hidden_size: int = 4096
     max_seq_length: int = 1024
     bf16: bool = True
+    # Backbone weights dtype. "auto" keeps prior behavior; recommended: "fp16" on V100.
+    dtype: str = "auto"
     load_in_4bit: bool = False
     load_in_8bit: bool = False
     device_map: Optional[str | Dict] = None
@@ -67,6 +69,7 @@ class R3Model(torch.nn.Module):
                 lora_rank=config.lora_rank,
                 lora_alpha=config.lora_alpha,
                 bf16=config.bf16,
+                dtype=getattr(config, "dtype", "auto"),
                 load_in_4bit=config.load_in_4bit,
                 load_in_8bit=config.load_in_8bit,
                 device_map=config.device_map,

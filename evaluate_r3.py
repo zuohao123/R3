@@ -398,6 +398,7 @@ def main() -> None:
             lora_alpha=model_section.get("lora_alpha", 16),
             hidden_size=model_section.get("hidden_size", 4096),
             bf16=model_section.get("bf16", False),
+            dtype=model_section.get("dtype", "auto"),
             load_in_4bit=model_section.get("load_in_4bit", False),
             load_in_8bit=model_section.get("load_in_8bit", False),
             device_map=model_section.get("device_map"),
@@ -421,10 +422,13 @@ def main() -> None:
         # materialize everything on one GPU and can OOM. Only move when not model-parallel.
         try:
             if hasattr(model, "base_vlm") and hasattr(model.base_vlm.model, "hf_device_map"):
-                model.is_model_parallel = True
-                model.is_parallelizable = True
-                model.model_parallel = True
-                model.hf_device_map = model.base_vlm.model.hf_device_map
+                dmap = getattr(model.base_vlm.model, "hf_device_map", {}) or {}
+                devices = set(dmap.values())
+                if len(devices) > 1:
+                    model.is_model_parallel = True
+                    model.is_parallelizable = True
+                    model.model_parallel = True
+                    model.hf_device_map = dmap
         except Exception:
             pass
         if model_cfg.device_map is None:

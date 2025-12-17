@@ -35,7 +35,7 @@ dataset:
         blur_prob: 0.7
         blur_radius: 4.5
   eval_split: val
-  batch_size: 4
+  batch_size: 1          # 8×V100 DDP 安全起步；显存富余可到 2
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl
 model:
@@ -44,6 +44,7 @@ model:
   lora_alpha: 16
   hidden_size: 4096
   bf16: false
+  dtype: fp16
   vision_tokens: 64
   load_in_4bit: false
   load_in_8bit: false
@@ -67,8 +68,8 @@ model:
 training:
   epochs: 1
   log_interval: 10
-  fp16: false
-  grad_accum_steps: 6        # batch=4，累积 6（等效全局≈24）
+  fp16: true
+  grad_accum_steps: 4        # 全局 batch≈32（1×8×4）
   grad_checkpoint: false       # 先关闭以规避 dtype/backward 问题
   use_chat_template: true
   lr_lora_mult: 0.3

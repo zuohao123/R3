@@ -17,7 +17,7 @@ dataset:
       weight: 3
       apply_corruption: false
   eval_split: val
-  batch_size: 4          # 模型并行后单卡可用显存较多，提升到 4
+  batch_size: 1          # 8×V100 DDP 安全起步（单卡不 OOM）；如显存富余再逐步加到 2
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
 model:
@@ -26,6 +26,7 @@ model:
   lora_alpha: 16
   hidden_size: 4096
   bf16: false                 # V100 不支持 bf16
+  dtype: fp16                 # 与基座/评测一致：fp16 权重，避免 DDP 单卡 OOM
   vision_tokens: 64           # 对齐官方长视觉序列
   load_in_4bit: false         # 关闭量化，避免精度差异
   load_in_8bit: false
@@ -49,9 +50,9 @@ model:
 training:
   epochs: 1
   log_interval: 10
-  fp16: false            # 关闭 AMP，使用 fp32 稳定对齐基座
-  grad_accum_steps: 6    # batch=4，累积 6，等效全局 batch≈24
-  grad_checkpoint: false  # 先关闭以规避 dtype/backward 问题，显存不足再开启
+  fp16: true             # 开启 AMP（fp16 计算 + fp32 可训练参数），更快且显存更省
+  grad_accum_steps: 4    # 8卡下全局 batch≈32（1×8×4）；如 batch=2 可改为 2
+  grad_checkpoint: false # 默认关闭；若仍 OOM 再开启
   use_chat_template: true
   lr_lora_mult: 1.0
   lr_r3_mult: 1.0

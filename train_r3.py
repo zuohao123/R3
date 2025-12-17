@@ -642,6 +642,7 @@ def main() -> None:
         lora_alpha=model_section.get("lora_alpha", 16),
         hidden_size=model_section.get("hidden_size", 4096),
         bf16=model_section.get("bf16", True),
+        dtype=model_section.get("dtype", "auto"),
         load_in_4bit=model_section.get("load_in_4bit", False),
         load_in_8bit=model_section.get("load_in_8bit", False),
         device_map=model_section.get("device_map"),
@@ -666,19 +667,21 @@ def main() -> None:
     logging.info("Loading model: %s (provider=%s)", model_cfg.model_name, model_cfg.provider)
     model = R3Model(model_cfg)
     logging.info("Model initialized with backbone %s", model_cfg.model_name)
-    # Mark as model-parallel if hf_device_map exists to prevent Trainer from moving to a single GPU
+    # Mark as model-parallel only when the backbone is truly sharded across >1 device.
+    # (In DDP, we may pass device_map={"": local_rank} which is single-device and should NOT disable DDP wrapping.)
     try:
         if hasattr(model, "base_vlm") and hasattr(model.base_vlm.model, "hf_device_map"):
-            model.is_model_parallel = True
-            model.is_parallelizable = True
-            model.model_parallel = True
-            model.hf_device_map = model.base_vlm.model.hf_device_map
+            dmap = getattr(model.base_vlm.model, "hf_device_map", {}) or {}
+            devices = set(dmap.values())
+            if len(devices) > 1:
+                model.is_model_parallel = True
+                model.is_parallelizable = True
+                model.model_parallel = True
+                model.hf_device_map = dmap
     except Exception:
         pass
     if hasattr(model, "base_vlm") and hasattr(model.base_vlm, "model") and hasattr(model.base_vlm.model, "config"):
         model.base_vlm.model.config.use_cache = False
-        if hasattr(model.base_vlm.model, "gradient_checkpointing_disable"):
-            model.base_vlm.model.gradient_checkpointing_disable()
 
     ddp = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     training_args = TrainingArguments(
