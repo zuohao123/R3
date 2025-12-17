@@ -18,6 +18,19 @@ import torch
 import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader, Dataset
+# Torch/Transformers compatibility:
+# - Some transformers builds call `torch.is_autocast_enabled(device_type)`, but older torch only supports
+#   `torch.is_autocast_enabled()` with no arguments.
+try:  # pragma: no cover
+    _orig_is_autocast_enabled = torch.is_autocast_enabled
+    try:
+        _orig_is_autocast_enabled("cuda")
+    except TypeError:
+        def _compat_is_autocast_enabled(device_type=None):  # type: ignore[override]
+            return _orig_is_autocast_enabled()
+        torch.is_autocast_enabled = _compat_is_autocast_enabled  # type: ignore[assignment]
+except Exception:
+    pass
 if not hasattr(torch, "compiler"):
     class _DummyCompiler:
         @staticmethod

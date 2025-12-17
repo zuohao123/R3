@@ -9,6 +9,19 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
+# Torch/Transformers compatibility:
+# - Some transformers builds call `torch.is_autocast_enabled(device_type)`, but older torch only supports
+#   `torch.is_autocast_enabled()` with no arguments.
+try:  # pragma: no cover
+    _orig_is_autocast_enabled = torch.is_autocast_enabled
+    try:
+        _orig_is_autocast_enabled("cuda")
+    except TypeError:
+        def _compat_is_autocast_enabled(device_type=None):  # type: ignore[override]
+            return _orig_is_autocast_enabled()
+        torch.is_autocast_enabled = _compat_is_autocast_enabled  # type: ignore[assignment]
+except Exception:
+    pass
 # Older torch (<2.3) may miss torch.compiler.is_compiling which new Qwen processors call.
 if not hasattr(torch, "compiler"):
     class _DummyCompiler:
