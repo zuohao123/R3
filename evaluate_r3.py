@@ -25,7 +25,12 @@ from tqdm import tqdm
 from transformers import AutoProcessor, AutoTokenizer, AutoModelForVision2Seq
 
 from data_pipeline.datasets import DATASET_REGISTRY, create_dataset, detect_dataset_type
-from data_pipeline.corruptions import ImageCorruptor, PseudoTextCorruptor
+from data_pipeline.corruptions import (
+    ImageCorruptionConfig,
+    ImageCorruptor,
+    PseudoTextCorruptionConfig,
+    PseudoTextCorruptor,
+)
 from r3.r3_model import R3Model, R3ModelConfig
 from train_r3 import R3Dataset, collate_fn, load_yaml, load_pseudo_corpus
 
@@ -282,6 +287,7 @@ def tokenize_with_template(split: Dict, tokenizer, max_length: int, device: torc
 
 def main() -> None:
     args = parse_args()
+    project_root = Path(__file__).resolve().parent
     cfg = load_yaml(args.config)
     dataset_cfg = cfg.get("dataset", {})
     eval_cfg = cfg.get("evaluation", {})
@@ -302,6 +308,13 @@ def main() -> None:
     if dataset_root is None:
         raise ValueError("Dataset root is not specified; set dataset.root or choose an entry from dataset.multi.")
     dataset_root = Path(dataset_root)
+    if not dataset_root.is_absolute():
+        dataset_root = project_root / dataset_root
+    dataset_root_rel = None
+    try:
+        dataset_root_rel = dataset_root.relative_to(project_root)
+    except Exception:
+        dataset_root_rel = None
 
     # Resolve dataset type
     dataset_type = args.dataset_type
@@ -312,14 +325,42 @@ def main() -> None:
     pseudo_corpus = load_pseudo_corpus(dataset_cfg.get("pseudo_corpus"))
     base_dataset = create_dataset(dataset_type, dataset_root, split=split)
 
+    # Build corruption configs for eval (stage2/stage3 yaml include per-dataset settings under dataset.multi).
+    pseudo_drop = dataset_cfg.get("pseudo_text_drop_prob", 0.3)
+    image_corr_cfg = dataset_cfg.get("image_corruption", {}) or {}
+    if "multi" in dataset_cfg:
+        chosen = None
+        if dataset_type != "auto":
+            for entry in dataset_cfg["multi"]:
+                if entry.get("type") == dataset_type:
+                    chosen = entry
+                    break
+        if chosen is None:
+            chosen = dataset_cfg["multi"][0]
+        pseudo_drop = chosen.get("pseudo_text_drop_prob", pseudo_drop)
+        image_corr_cfg = chosen.get("image_corruption", image_corr_cfg) or image_corr_cfg
+
+    eval_image_corruptor = None
+    eval_pseudo_corruptor = None
+    if apply_corruption:
+        eval_image_corruptor = ImageCorruptor(
+            ImageCorruptionConfig(
+                occlusion_prob=image_corr_cfg.get("occlusion_prob", 0.5),
+                occlusion_ratio=image_corr_cfg.get("occlusion_ratio", 0.25),
+                blur_prob=image_corr_cfg.get("blur_prob", 0.5),
+                blur_radius=image_corr_cfg.get("blur_radius", 3.0),
+            )
+        )
+        eval_pseudo_corruptor = PseudoTextCorruptor(PseudoTextCorruptionConfig(drop_prob=pseudo_drop))
+
     dataset = R3Dataset(
         base_dataset,
         vision_tokens=cfg["model"].get("vision_tokens", 16),
         hidden_size=cfg["model"].get("hidden_size", 4096),
         apply_corruption=apply_corruption,
         pseudo_corpus=pseudo_corpus,
-        image_corruptor=ImageCorruptor() if apply_corruption else None,
-        pseudo_text_corruptor=PseudoTextCorruptor() if apply_corruption else None,
+        image_corruptor=eval_image_corruptor,
+        pseudo_text_corruptor=eval_pseudo_corruptor,
     )
     if args.limit:
         dataset = Subset(dataset, list(range(min(args.limit, len(dataset)))))
@@ -429,26 +470,56 @@ def main() -> None:
                 # Debug: show whether corrupted images are present
                 if idx == 0 and args.log_samples:
                     print(f"[debug] split={split_key} img_type={type(img)} img_path={img_path}")
-                if img is None and img_path:
+                loaded = img is not None
+                candidates: List[Path] = []
+                if not loaded and img_path:
                     from PIL import Image
+
                     cand = Path(img_path)
                     candidates = [cand]
-                    # Fix duplicated segment like documents/documents
-                    if "documents/documents" in str(cand):
-                        candidates.append(Path(str(cand).replace("documents/documents", "documents", 1)))
-                    # If relative, try under dataset_root
+                    # Fix common duplicated segments.
+                    fixes = {
+                        "documents/documents": "documents",
+                        "charts/charts": "charts",
+                        "images/images": "images",
+                        "pics/pics": "pics",
+                    }
+                    for dup, fix in fixes.items():
+                        if dup in str(cand):
+                            candidates.append(Path(str(cand).replace(dup, fix, 1)))
+                    # Expand relative paths under project_root for robustness.
+                    expanded: List[Path] = []
+                    for c in candidates:
+                        expanded.append(c)
+                        if not c.is_absolute():
+                            expanded.append(project_root / c)
+                    candidates = expanded
+
+                    # If still relative and not already prefixed by dataset_root_rel, try under dataset_root.
                     if dataset_root:
-                        candidates.append(dataset_root / cand)
-                        candidates.append(dataset_root / cand.name)
-                    loaded = False
+                        extra: List[Path] = []
+                        for c in candidates:
+                            if c.is_absolute():
+                                continue
+                            if dataset_root_rel is not None and str(c).startswith(str(dataset_root_rel)):
+                                continue
+                            extra.append(dataset_root / c)
+                            extra.append(dataset_root / c.name)
+                        candidates.extend(extra)
                     for c in candidates:
                         if c.exists():
                             img = Image.open(c).convert("RGB")
                             img_path = str(c)
                             loaded = True
                             break
+                    # Apply corruption on-the-fly when dataset did not provide an in-memory corrupted image.
+                    if loaded and apply_corruption and split_key == "corrupted" and eval_image_corruptor is not None:
+                        img = eval_image_corruptor(img)
                 if not loaded:
-                    print(f"[WARN] image not found for id={batch['ids'][0]} path={img_path}, tried {[str(c) for c in candidates]}; skip sample")
+                    print(
+                        f"[WARN] image not found for id={batch['ids'][0]} path={img_path}, "
+                        f"tried {[str(c) for c in candidates]}; skip sample"
+                    )
                     continue
                 # Encourage short, direct answers
                 messages = [

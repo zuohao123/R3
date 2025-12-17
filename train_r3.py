@@ -137,6 +137,7 @@ class R3Dataset(Dataset):
     def _load_image(path: Optional[str]) -> Optional[Image.Image]:
         if not path:
             return None
+        project_root = Path(__file__).resolve().parent
         candidates = []
         try:
             candidates.append(Path(path))
@@ -147,8 +148,6 @@ class R3Dataset(Dataset):
             "charts/charts": "charts",
             "images/images": "images",
             "pics/pics": "pics",
-            "documents/": "documents/",
-            "charts/": "charts/",
         }
         for dup, fix in dup_fix.items():
             if dup in path:
@@ -156,7 +155,12 @@ class R3Dataset(Dataset):
                     candidates.append(Path(path.replace(dup, fix, 1)))
                 except Exception:
                     pass
+        expanded: List[Path] = []
         for cand in candidates:
+            expanded.append(cand)
+            if not cand.is_absolute():
+                expanded.append(project_root / cand)
+        for cand in expanded:
             if cand.exists():
                 try:
                     return Image.open(cand).convert("RGB")
@@ -464,6 +468,7 @@ def load_pseudo_corpus(path: Optional[str]) -> Dict[str, List[str]]:
 
 def main() -> None:
     args = parse_args()
+    project_root = Path(__file__).resolve().parent
 
     # 运行示例（中文说明）:
     # 单卡训练:
@@ -488,6 +493,8 @@ def main() -> None:
 
     def build_single_dataset(section: Dict) -> R3Dataset:
         ds_root = Path(section["root"])
+        if not ds_root.is_absolute():
+            ds_root = project_root / ds_root
         ds_split = section.get("split", "train")
         ds_type = section.get("type", "textvqa")
         if ds_type == "auto":
