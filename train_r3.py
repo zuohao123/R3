@@ -684,7 +684,8 @@ def main() -> None:
         model.base_vlm.model.config.use_cache = False
 
     ddp = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
-    training_args = TrainingArguments(
+    # Build TrainingArguments in a version-tolerant way (older transformers may not support some kwargs).
+    training_kwargs = dict(
         output_dir=str(args.output_dir),
         num_train_epochs=training_section.get("epochs", 1),
         max_steps=args.max_steps if args.max_steps is not None else training_section.get("max_steps"),
@@ -704,9 +705,14 @@ def main() -> None:
         dataloader_num_workers=training_section.get("num_workers", 0),
         ddp_find_unused_parameters=False if ddp else None,
         ddp_backend="nccl" if ddp else None,
-        save_safetensors=False,  # avoid safetensors shared-memory save errors due to shared embeddings
-        # place_model_on_device not available in this transformers version; we rely on model.hf_device_map
+        # avoid safetensors shared-memory save errors due to shared embeddings (only if supported)
+        save_safetensors=False,
     )
+    sig = inspect.signature(TrainingArguments.__init__)
+    for k in list(training_kwargs.keys()):
+        if k not in sig.parameters:
+            training_kwargs.pop(k)
+    training_args = TrainingArguments(**training_kwargs)
 
     # Quick eval callback: runs on rank0 every N logging events if enabled
     class QuickEvalCallback(TrainerCallback):
