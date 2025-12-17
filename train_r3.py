@@ -338,16 +338,11 @@ class R3Trainer(Trainer):
         tokenizer = base_model.base_vlm.tokenizer
         max_length = getattr(base_model.config, "max_seq_length", 1024)
 
-        clean_split = inputs["clean"]
         corrupted_split = inputs["corrupted"]
 
-        clean_tokens, clean_pseudo = self._tokenize_branch(
-            tokenizer, clean_split, max_length, device, use_chat_template=self.use_chat_template
-        )
         corrupted_tokens, corrupted_pseudo = self._tokenize_branch(
             tokenizer, corrupted_split, max_length, device, use_chat_template=self.use_chat_template
         )
-        clean_vision = self._get_vision_embeddings(base_model, clean_split, device)
         corrupted_vision = self._get_vision_embeddings(base_model, corrupted_split, device)
 
         enable_consistency = bool(getattr(base_model.config, "enable_consistency", False))
@@ -355,6 +350,11 @@ class R3Trainer(Trainer):
 
         teacher_out = None
         if lambda_c > 0.0:
+            clean_split = inputs["clean"]
+            clean_tokens, clean_pseudo = self._tokenize_branch(
+                tokenizer, clean_split, max_length, device, use_chat_template=self.use_chat_template
+            )
+            clean_vision = self._get_vision_embeddings(base_model, clean_split, device)
             with torch.no_grad():
                 teacher_out = model(
                     input_ids=clean_tokens["input_ids"],
@@ -510,7 +510,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--log_file", type=Path, default=None, help="Optional path to save training logs.")
     parser.add_argument("--max_steps", type=int, default=None, help="Optional max training steps (overrides epochs).")
-    parser.add_argument("--quick_eval_every", type=int, default=None, help="If set, run a 1-sample quick eval every N logging events on rank0.")
+    parser.add_argument(
+        "--quick_eval_every",
+        type=int,
+        default=None,
+        help="If set, run a 1-sample quick eval every N optimizer steps on rank0.",
+    )
     parser.add_argument("--log_interval", type=int, default=None, help="Override training.log_interval for logging_steps.")
     parser.add_argument(
         "--resume_from_checkpoint",
@@ -626,11 +631,6 @@ def main() -> None:
     else:
         train_dataset = build_single_dataset(dataset_section)
         logging.info("Single dataset initialized.")
-    # Cache a clean sample for quick eval; pick a random index each run (and store the index)
-    quick_eval_sample = None
-    if len(train_dataset) > 0:
-        quick_idx = random.randint(0, len(train_dataset) - 1)
-        quick_eval_sample = {"idx": quick_idx, "batch": collate_fn([train_dataset[quick_idx]])}
 
     model_section = cfg.get("model", {})
     training_section = cfg.get("training", {})
@@ -707,18 +707,39 @@ def main() -> None:
 
     # Quick eval callback: runs on rank0 every N logging events if enabled
     class QuickEvalCallback(TrainerCallback):
-        def __init__(self, sample: Optional[Dict], every: Optional[int], tokenizer, processor, logger):
-            self.sample_info = sample
+        def __init__(self, dataset: Dataset, every: Optional[int], tokenizer, processor, logger):
+            self.dataset = dataset
             self.every = every
             self.tokenizer = tokenizer
             self.processor = processor
             self.logger = logger
+            self._last_step: int = -1
+            self._last_id: Optional[str] = None
 
-        def on_log(self, args, state, control, **kwargs):
-            if self.sample_info is None or self.every is None:
+        def _sample(self) -> Dict:
+            # MultiTaskDataset ignores idx and samples randomly; this works for both cases.
+            if len(self.dataset) <= 0:
+                raise RuntimeError("Empty dataset; cannot quick-eval.")
+            for _ in range(10):
+                idx = random.randint(0, len(self.dataset) - 1)
+                item = self.dataset[idx]
+                sid = str(item.get("id", ""))
+                if sid and sid != self._last_id:
+                    self._last_id = sid
+                    item["_quick_idx"] = idx
+                    return item
+            item = self.dataset[random.randint(0, len(self.dataset) - 1)]
+            item["_quick_idx"] = -1
+            return item
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if self.every is None:
                 return
             if state.global_step == 0 or state.global_step % self.every != 0:
                 return
+            if state.global_step == self._last_step:
+                return
+            self._last_step = int(state.global_step)
             # rank check
             local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
             if local_rank not in (-1, 0):
@@ -729,74 +750,51 @@ def main() -> None:
             model_was_training = model.training
             model.eval()
             try:
-                clean = self.sample_info["batch"]["clean"]
-                q = clean["question"][0]
-                img = clean["images"][0] if clean["images"][0] is not None else None
-                img_path = None
-                if img is None:
-                    paths = clean.get("image_path")
-                    if isinstance(paths, list) and paths and paths[0]:
-                        from PIL import Image
-                        # Try common locations to resolve relative path issues.
-                        candidates = [Path(paths[0])]
-                        # common duplicated segments to fix
-                        dup_fix = {
-                            "documents/documents": "documents",
-                            "charts/charts": "charts",
-                            "images/images": "images",
-                            "pics/pics": "pics",
-                        }
-                        for dup, fix in dup_fix.items():
-                            if dup in paths[0]:
-                                candidates.append(Path(paths[0].replace(dup, fix, 1)))
-                        if dataset_section.get("root"):
-                            root = Path(dataset_section["root"])
-                            candidates.append(root / paths[0])
-                            candidates.append(root / Path(paths[0]).name)
-                            # also try fixing duplicated segment under root
-                            for dup, fix in dup_fix.items():
-                                if dup in paths[0]:
-                                    candidates.append(root / paths[0].replace(dup, fix, 1))
-                        loaded = False
-                        for c in candidates:
-                            if c.exists():
-                                img_path = str(c)
-                                img = Image.open(c).convert("RGB")
-                                loaded = True
-                                break
-                        if not loaded:
-                            raise FileNotFoundError(f"Image not found for quick_eval: {paths[0]}, tried {candidates}")
+                item = self._sample()
+                clean = item["clean"]
+                corrupted = item["corrupted"]
+                # Prefer corrupted branch if corruption is enabled and actually changed the image object.
+                branch = corrupted if (corrupted.get("image") is not None and corrupted.get("image") is not clean.get("image")) else clean
+                q = branch["question"]
+                tgt = branch.get("labels", "")
+                img = branch.get("image")
+                img_path = branch.get("image_path")
+                if img is None and img_path:
+                    img = R3Dataset._load_image(img_path)
                 messages = [
                     {
                         "role": "user",
                         "content": [{"type": "image"}, {"type": "text", "text": q + "\nPlease answer with the short answer only."}],
                     }
                 ]
-                prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                # fall back to first param device if model has no .device attr
-                dev = getattr(model, "device", None)
-                if dev is None:
-                    try:
-                        dev = next(model.parameters()).device
-                    except Exception:
-                        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                if hasattr(self.tokenizer, "apply_chat_template"):
+                    prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                else:
+                    prompt = f"Question: {q}\nAnswer:"
+                # Prefer embedding device under model-parallel `device_map="auto"`.
+                base_model = model.module if hasattr(model, "module") else model
+                try:
+                    dev = base_model.base_vlm.model.get_input_embeddings().weight.device
+                except Exception:
+                    dev = next(base_model.parameters()).device
                 inputs = self.processor(text=[prompt], images=[img], return_tensors="pt").to(dev)
                 input_len = inputs["input_ids"].shape[1]
                 with torch.no_grad():
-                    gen = model.base_vlm.model.generate(  # type: ignore
+                    gen = base_model.base_vlm.model.generate(  # type: ignore
                         **inputs,
                         max_new_tokens=64,
                         do_sample=False,
                         num_beams=1,
-                        temperature=0.0,
-                        top_p=1.0,
                         eos_token_id=self.tokenizer.eos_token_id,
                         pad_token_id=self.tokenizer.eos_token_id,
                     )
                 gen_ids = gen[0][input_len:]
                 pred = self.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
-                tgt = clean.get("labels", [""])[0] if isinstance(clean.get("labels"), list) else ""
-                self.logger.info(f"[quick_eval step={state.global_step}] idx={self.sample_info.get('idx')} | q={q} | pred={pred} | tgt={tgt} | img={img_path}")
+                sid = str(item.get("id", ""))
+                idx = item.get("_quick_idx", -1)
+                self.logger.info(
+                    f"[quick_eval step={state.global_step}] idx={idx} id={sid} | q={q} | pred={pred} | tgt={tgt} | img={img_path}"
+                )
             except Exception as e:
                 self.logger.warning(f"[quick_eval] failed: {e}")
             finally:
@@ -805,10 +803,10 @@ def main() -> None:
 
     callbacks = [CurriculumScheduler(), LossLogger(logging.getLogger())]
     # build quick eval callback
-    if args.quick_eval_every is not None and quick_eval_sample is not None and hasattr(model, "base_vlm"):
+    if args.quick_eval_every is not None and hasattr(model, "base_vlm"):
         callbacks.append(
             QuickEvalCallback(
-                sample=quick_eval_sample,
+                dataset=train_dataset,
                 every=args.quick_eval_every,
                 tokenizer=model.base_vlm.tokenizer,
                 processor=model.base_vlm.processor,

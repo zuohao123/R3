@@ -20,7 +20,17 @@ class ChartQADataset(BasePMCDataset):
         return annotations
 
     def _load_raw_item(self, sample_meta: Dict) -> Dict:
-        image_path = self.root / "charts" / sample_meta["image"]
+        image_meta = sample_meta["image"]
+        image_rel = Path(str(image_meta))
+        if image_rel.is_absolute():
+            image_path = image_rel
+        else:
+            parts = list(image_rel.parts)
+            # Some annotations already include the "charts/" prefix, and some even duplicate it.
+            while len(parts) > 1 and parts[0] == parts[1] and parts[0] == "charts":
+                parts.pop(0)
+            image_rel = Path(*parts)
+            image_path = self.root / image_rel if "charts" in image_rel.parts else (self.root / "charts" / image_rel)
         return {
             "question": sample_meta["question"],
             "answer": sample_meta.get("answer"),

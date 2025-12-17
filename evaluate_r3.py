@@ -551,8 +551,6 @@ def main() -> None:
                     max_new_tokens=96,
                     do_sample=False,
                     num_beams=1,
-                    temperature=0.0,
-                    top_p=1.0,
                     eos_token_id=tokenizer.eos_token_id,
                     pad_token_id=tokenizer.eos_token_id,
                 )
