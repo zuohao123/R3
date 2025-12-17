@@ -281,30 +281,89 @@ class R3Trainer(Trainer):
     Custom Trainer that computes dual-branch loss inline.
     """
 
+    def __init__(
+        self,
+        *args,
+        lr_lora_mult: float = 0.5,
+        lr_r3_mult: float = 1.0,
+        use_chat_template: bool = False,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.lr_lora_mult = lr_lora_mult
+        self.lr_r3_mult = lr_r3_mult
+        self.use_chat_template = use_chat_template
+
+    def create_optimizer(self):
+        """
+        Use separate LR for LoRA weights vs. R³ modules.
+        - R³ modules (simulator/retrieval/reconstruction/reasoner): lr = base_lr * lr_r3_mult
+        - LoRA weights under base_vlm.model: lr = base_lr * lr_lora_mult
+        """
+        if self.optimizer is not None:
+            return self.optimizer
+
+        base_lr = float(self.args.learning_rate)
+        wd = float(self.args.weight_decay)
+        model = self.model.module if hasattr(self.model, "module") else self.model
+
+        lora_params = []
+        r3_params = []
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if name.startswith("base_vlm.model"):
+                lora_params.append(param)
+            else:
+                r3_params.append(param)
+
+        param_groups = []
+        if r3_params:
+            param_groups.append({"params": r3_params, "lr": base_lr * float(self.lr_r3_mult), "weight_decay": wd})
+        if lora_params:
+            param_groups.append({"params": lora_params, "lr": base_lr * float(self.lr_lora_mult), "weight_decay": wd})
+        if not param_groups:
+            param_groups = [{"params": [p for p in model.parameters() if p.requires_grad], "lr": base_lr, "weight_decay": wd}]
+
+        self.optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.95), eps=1e-8)
+        return self.optimizer
+
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         # Unwrap DDP for attribute access while keeping forward on the wrapped model.
         base_model = model.module if hasattr(model, "module") else model
-        device = next(base_model.parameters()).device
+        try:
+            device = base_model.base_vlm.model.get_input_embeddings().weight.device
+        except Exception:
+            device = next(base_model.parameters()).device
         tokenizer = base_model.base_vlm.tokenizer
         max_length = getattr(base_model.config, "max_seq_length", 1024)
 
         clean_split = inputs["clean"]
         corrupted_split = inputs["corrupted"]
 
-        clean_tokens, clean_pseudo = self._tokenize_branch(tokenizer, clean_split, max_length, device)
-        corrupted_tokens, corrupted_pseudo = self._tokenize_branch(tokenizer, corrupted_split, max_length, device)
+        clean_tokens, clean_pseudo = self._tokenize_branch(
+            tokenizer, clean_split, max_length, device, use_chat_template=self.use_chat_template
+        )
+        corrupted_tokens, corrupted_pseudo = self._tokenize_branch(
+            tokenizer, corrupted_split, max_length, device, use_chat_template=self.use_chat_template
+        )
         clean_vision = self._get_vision_embeddings(base_model, clean_split, device)
         corrupted_vision = self._get_vision_embeddings(base_model, corrupted_split, device)
 
-        with torch.no_grad():
-            teacher_out = model(
-                input_ids=clean_tokens["input_ids"],
-                attention_mask=clean_tokens["attention_mask"],
-                pixel_values=clean_vision,
-                labels=None,
-                pseudo_text=clean_pseudo,
-                is_clean_branch=True,
-            )
+        enable_consistency = bool(getattr(base_model.config, "enable_consistency", False))
+        lambda_c = float(getattr(base_model.config, "lambda_consistency", 0.0)) if enable_consistency else 0.0
+
+        teacher_out = None
+        if lambda_c > 0.0:
+            with torch.no_grad():
+                teacher_out = model(
+                    input_ids=clean_tokens["input_ids"],
+                    attention_mask=clean_tokens["attention_mask"],
+                    pixel_values=clean_vision,
+                    labels=None,
+                    pseudo_text=clean_pseudo,
+                    is_clean_branch=True,
+                )
 
         student_out = model(
             input_ids=corrupted_tokens["input_ids"],
@@ -318,11 +377,13 @@ class R3Trainer(Trainer):
         vision_tokens = corrupted_vision.size(1)
         student_logits = student_out["logits"].float()
         loss_task = self._causal_ce(student_logits, corrupted_tokens["labels"], vision_tokens)
-        loss_consistency = F.mse_loss(
-            teacher_out["pooled_hidden"].detach().float(),
-            student_out["pooled_hidden"].float(),
-        )
-        lambda_c = getattr(base_model.config, "lambda_consistency", 0.0)
+        if teacher_out is None:
+            loss_consistency = torch.zeros((), device=student_logits.device, dtype=torch.float32)
+        else:
+            loss_consistency = F.mse_loss(
+                teacher_out["pooled_hidden"].detach().float(),
+                student_out["pooled_hidden"].float(),
+            )
         # Ensure loss is in float32 to avoid backward dtype issues under mixed precision.
         loss_task = loss_task.float()
         loss_consistency = loss_consistency.float()
@@ -363,15 +424,28 @@ class R3Trainer(Trainer):
         return loss
 
     @staticmethod
-    def _tokenize_branch(tokenizer, split: Dict, max_length: int, device: torch.device):
+    def _tokenize_branch(
+        tokenizer,
+        split: Dict,
+        max_length: int,
+        device: torch.device,
+        use_chat_template: bool = False,
+    ):
         questions = split["question"]
         labels_text = split.get("labels", [""] * len(questions))
         pseudo_text = split.get("pseudo_text", [[] for _ in questions])
 
-        prompts = [
-            f"{R3Trainer._format_pseudo_text(pseudo)}\nQuestion: {q}\nAnswer:" if R3Trainer._format_pseudo_text(pseudo) else f"Question: {q}\nAnswer:"
-            for q, pseudo in zip(questions, pseudo_text)
-        ]
+        prompts = []
+        for q, pseudo in zip(questions, pseudo_text):
+            pseudo_block = R3Trainer._format_pseudo_text(pseudo)
+            user_content = f"{pseudo_block}\nQuestion: {q}".strip() if pseudo_block else f"Question: {q}"
+            user_content = user_content + "\nPlease answer with the short answer only."
+            if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+                messages = [{"role": "user", "content": user_content}]
+                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            else:
+                prompt = f"{user_content}\nAnswer:"
+            prompts.append(prompt)
         prompt_tokens = tokenizer(
             prompts,
             return_tensors="pt",
@@ -438,6 +512,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_steps", type=int, default=None, help="Optional max training steps (overrides epochs).")
     parser.add_argument("--quick_eval_every", type=int, default=None, help="If set, run a 1-sample quick eval every N logging events on rank0.")
     parser.add_argument("--log_interval", type=int, default=None, help="Override training.log_interval for logging_steps.")
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=Path,
+        default=None,
+        help="Optional path to a HuggingFace Trainer checkpoint dir (e.g., checkpoint-1000) to resume from.",
+    )
     return parser.parse_args()
 
 
@@ -742,9 +822,16 @@ def main() -> None:
         train_dataset=train_dataset,
         data_collator=collate_fn,
         callbacks=callbacks,
+        lr_lora_mult=float(training_section.get("lr_lora_mult", 0.5)),
+        lr_r3_mult=float(training_section.get("lr_r3_mult", 1.0)),
+        use_chat_template=bool(training_section.get("use_chat_template", False)),
     )
     logging.info("Starting training for %s epochs", training_args.num_train_epochs)
-    trainer.train()
+    if args.resume_from_checkpoint is not None:
+        logging.info("Resuming from checkpoint: %s", args.resume_from_checkpoint)
+        trainer.train(resume_from_checkpoint=str(args.resume_from_checkpoint))
+    else:
+        trainer.train()
     logging.info("Training finished. Checkpoints at %s", args.output_dir)
 
 

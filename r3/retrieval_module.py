@@ -120,34 +120,44 @@ class PseudoTextRetrievalModule(nn.Module):
         img_conf: torch.Tensor,
         txt_conf: torch.Tensor,
     ) -> Dict[str, torch.Tensor | List[List[str]]]:
-        # Align projection heads to input dtype/device to avoid matmul dtype mismatch under quantization/fp16.
-        target_device = question_embeddings.device
-        target_dtype = question_embeddings.dtype
-        if self.query_proj.weight.device != target_device or self.query_proj.weight.dtype != target_dtype:
-            self.query_proj = self.query_proj.to(device=target_device, dtype=target_dtype)
-            self.evidence_proj = self.evidence_proj.to(device=target_device, dtype=target_dtype)
-            self.scorer = self.scorer.to(device=target_device, dtype=target_dtype)
-
         if not self.config.enable:
             batch_size = question_embeddings.size(0)
             return {
                 "texts": [[] for _ in range(batch_size)],
-                "embeddings": torch.zeros(batch_size, 0, 1, self.config.hidden_size, device=question_embeddings.device, dtype=question_embeddings.dtype),
-                "scores": torch.zeros(batch_size, 0, device=question_embeddings.device, dtype=question_embeddings.dtype),
+                "embeddings": torch.zeros(
+                    batch_size,
+                    0,
+                    1,
+                    self.config.hidden_size,
+                    device=question_embeddings.device,
+                    dtype=torch.float32,
+                ),
+                "scores": torch.zeros(batch_size, 0, device=question_embeddings.device, dtype=torch.float32),
             }
 
-        query = self._build_query(question_embeddings, txt_conf)  # (b, d)
+        # Keep retrieval math in fp32 for stability; cast inputs as needed.
+        device = self.query_proj.weight.device
+        query = self._build_query(
+            question_embeddings.to(device=device).float(),
+            txt_conf.to(device=device).float(),
+        )  # (b, d)
         if self.external_embeddings is not None and self.external_texts is not None:
             # Use external corpus built from build_pseudo_text.py outputs
-            evidence_embeddings = self.external_embeddings.to(question_embeddings.device)
+            evidence_embeddings = self.external_embeddings.to(device=device).float()
             evidence_texts = [self.external_texts for _ in range(question_embeddings.size(0))]
         else:
-            evidence_embeddings, evidence_texts = self._encode_evidence(pseudo_text, question_embeddings.device)
+            evidence_embeddings, evidence_texts = self._encode_evidence(pseudo_text, device)
+            evidence_embeddings = evidence_embeddings.float()
 
         if self.use_faiss and self.index is not None:
             topk_embeddings, topk_texts, topk_scores = self._faiss_search(evidence_embeddings, evidence_texts, query)
         else:
-            scores = self._score(query, evidence_embeddings, img_conf, txt_conf)
+            scores = self._score(
+                query,
+                evidence_embeddings,
+                img_conf.to(device=device).float(),
+                txt_conf.to(device=device).float(),
+            )
             topk_embeddings, topk_texts, topk_scores = self._select_topk(evidence_embeddings, evidence_texts, scores)
         return {
             "texts": topk_texts,

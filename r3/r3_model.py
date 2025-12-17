@@ -111,6 +111,21 @@ class R3Model(torch.nn.Module):
                 self.retrieval.ingest_corpus(config.retrieval_corpus_path)
             except Exception:
                 pass
+        # Place the lightweight R³ modules on the same device as text embeddings.
+        # This is critical when the backbone is loaded with `device_map="auto"` (model parallel),
+        # because we won't call a global `model.to(device)` afterward.
+        self._place_r3_modules()
+
+    def _place_r3_modules(self) -> None:
+        try:
+            emb = self.base_vlm.model.get_input_embeddings()
+            device = emb.weight.device
+        except Exception:
+            device = next(self.base_vlm.model.parameters()).device
+        self.simulator.to(device=device)
+        self.retrieval.to(device=device)
+        self.reconstruction.to(device=device)
+        self.reasoner.to(device=device)
 
     def forward(
         self,
@@ -210,7 +225,11 @@ class R3Model(torch.nn.Module):
             txt_conf,
         )
         # 4) TriPathReasoner 再细化融合后的 token
-        refined_text = self.reasoner(recon_out["inputs_embeds"], recon_out["attention_mask"])
+        # If reconstruction did not change sequence length (no evidence / no extra tokens),
+        # skip the extra encoder to keep behavior close to the base model in Stage1.
+        refined_text = recon_out["inputs_embeds"]
+        if refined_text.size(1) != text_embeddings.size(1):
+            refined_text = self.reasoner(recon_out["inputs_embeds"], recon_out["attention_mask"])
         combined_inputs, combined_attention, padded_labels = self._merge_modalities(
             refined_text,
             recon_out["attention_mask"],

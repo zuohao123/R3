@@ -416,7 +416,19 @@ def main() -> None:
             enable_consistency=False if args.disable_consistency else model_section.get("enable_consistency", False),
             top_k=model_section.get("top_k", 3),
         )
-        model = R3Model(model_cfg).to(args.device)
+        model = R3Model(model_cfg)
+        # If the backbone is sharded via `device_map`, a global `.to(device)` will try to
+        # materialize everything on one GPU and can OOM. Only move when not model-parallel.
+        try:
+            if hasattr(model, "base_vlm") and hasattr(model.base_vlm.model, "hf_device_map"):
+                model.is_model_parallel = True
+                model.is_parallelizable = True
+                model.model_parallel = True
+                model.hf_device_map = model.base_vlm.model.hf_device_map
+        except Exception:
+            pass
+        if model_cfg.device_map is None:
+            model = model.to(args.device)
         ckpt_arg = args.checkpoint or args.ckpt_dir
         if ckpt_arg:
             ckpt_path = ckpt_arg
@@ -595,18 +607,20 @@ def main() -> None:
                             )
                 continue
 
-            device = next(model.parameters()).device
+            try:
+                device = model.base_vlm.model.get_input_embeddings().weight.device
+            except Exception:
+                device = next(model.parameters()).device
             clean_split = batch["clean"]
             corrupted_split = batch["corrupted"]
             tokenizer = model.base_vlm.tokenizer
             max_len = getattr(model.config, "max_seq_length", 2048)
             from train_r3 import R3Trainer  # reuse vision utilities
 
-            trainer_stub = R3Trainer(model=model, args=None, train_dataset=None, data_collator=None)
             corrupted_tokens, corrupted_pseudo = tokenize_with_template(
                 corrupted_split, tokenizer, max_len, device, use_chat_template=args.use_chat_template
             )
-            corrupted_vision = trainer_stub._get_vision_embeddings(model, corrupted_split, device)
+            corrupted_vision = R3Trainer._get_vision_embeddings(model, corrupted_split, device)
             student_out = model(
                 input_ids=corrupted_tokens["input_ids"],
                 attention_mask=corrupted_tokens["attention_mask"],
@@ -618,7 +632,7 @@ def main() -> None:
 
             # Manual CE loss to avoid shape mismatch; mirror training logic.
             vision_tokens = corrupted_vision.size(1)
-            loss = trainer_stub._causal_ce(student_out["logits"].float(), corrupted_tokens["labels"], vision_tokens)
+            loss = R3Trainer._causal_ce(student_out["logits"].float(), corrupted_tokens["labels"], vision_tokens)
             total_loss += loss.item()
             total_batches += 1
 
@@ -626,7 +640,9 @@ def main() -> None:
             predictions = [first_sentence(clean_generation_output(p)) for p in raw_predictions]
             scored_preds = [best_span_match(p, t) for p, t in zip(predictions, corrupted_split["labels"])]
             targets = corrupted_split["labels"]
-            for sample_id, pred_raw, scored_pred, target in zip(batch["ids"], predictions, scored_preds, targets):
+            for j, (sample_id, pred_raw, scored_pred, target) in enumerate(
+                zip(batch["ids"], predictions, scored_preds, targets)
+            ):
                 total += 1
                 if is_correct(scored_pred, target):
                     correct += 1

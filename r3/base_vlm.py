@@ -117,6 +117,10 @@ class BaseVLM(torch.nn.Module):
             grid_thw = grid_thw.to(device=device)
 
         vision_hidden = self._forward_vision(pixel_values, grid_thw=grid_thw)
+        # If the vision tower lives on a different device under `device_map="auto"`,
+        # _forward_vision may have executed on that device; bring features back.
+        if vision_hidden.device != device:
+            vision_hidden = vision_hidden.to(device=device)
         vision_hidden = self._resize_tokens(vision_hidden, vision_tokens)
         vision_hidden = self._match_hidden(vision_hidden, hidden_size)
         return vision_hidden
@@ -125,6 +129,17 @@ class BaseVLM(torch.nn.Module):
         vision_fn = self._locate_vision_module(self.model)
         if vision_fn is None:
             raise RuntimeError("Backbone does not expose a vision module; cannot encode images.")
+        # Under `device_map="auto"`, the vision tower may be on a different GPU than the text embeddings.
+        # Move pixel_values/grid_thw to the vision tower device for the forward.
+        try:
+            vision_device = next(vision_fn.parameters()).device
+        except Exception:
+            vision_device = None
+        if vision_device is not None:
+            if pixel_values.device != vision_device:
+                pixel_values = pixel_values.to(device=vision_device)
+            if grid_thw is not None and grid_thw.device != vision_device:
+                grid_thw = grid_thw.to(device=vision_device)
         try:
             outputs = vision_fn(pixel_values, grid_thw=grid_thw) if grid_thw is not None else vision_fn(pixel_values)
         except TypeError:

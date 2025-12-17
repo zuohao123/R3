@@ -124,34 +124,57 @@ class SelectiveReconstruction(nn.Module):
         img_conf: torch.Tensor,
         txt_conf: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        # Align submodules to input dtype/device to avoid matmul dtype mismatch.
-        self.prefix = self.prefix.to(device=text_embeddings.device, dtype=text_embeddings.dtype)
-        self.memory = self.memory.to(device=text_embeddings.device, dtype=text_embeddings.dtype)
-        self.imputation = self.imputation.to(device=text_embeddings.device, dtype=text_embeddings.dtype)
-        self.gating = self.gating.to(device=text_embeddings.device, dtype=text_embeddings.dtype)
-
+        # Keep module weights in fp32; cast activations to fp32 for internal math,
+        # then cast outputs back to the original dtype for the base model.
+        base_dtype = text_embeddings.dtype
+        device = text_embeddings.device
         evidence_embeddings = retrieval.get("embeddings")
+        if evidence_embeddings is None:
+            evidence_embeddings = torch.zeros(
+                text_embeddings.size(0),
+                0,
+                1,
+                text_embeddings.size(-1),
+                device=device,
+                dtype=torch.float32,
+            )
+        else:
+            evidence_embeddings = evidence_embeddings.to(device=device).float()
         evidence_scores = retrieval.get(
             "scores",
-            torch.zeros(text_embeddings.size(0), 1, device=text_embeddings.device, dtype=text_embeddings.dtype),
+            torch.zeros(text_embeddings.size(0), 1, device=device, dtype=torch.float32),
         )
+        evidence_scores = evidence_scores.to(device=device).float()
 
         # Align batch for conf and evidence_scores
         b = text_embeddings.size(0)
-        img_conf = self._align_batch(img_conf, b)
-        txt_conf = self._align_batch(txt_conf, b)
+        img_conf = self._align_batch(img_conf.to(device=device).float(), b)
+        txt_conf = self._align_batch(txt_conf.to(device=device).float(), b)
         evidence_scores = self._align_batch(evidence_scores, b)
 
-        gates = self.gating(img_conf, txt_conf, evidence_scores)
+        if evidence_embeddings.numel() == 0:
+            gates = torch.zeros(text_embeddings.size(0), 2, device=device, dtype=torch.float32)
+        else:
+            gates = self.gating(img_conf, txt_conf, evidence_scores)
 
-        prefix_tokens = self._build_prefix(evidence_embeddings) if self.config.enable_prefix else text_embeddings.new_zeros(text_embeddings.size(0), 0, text_embeddings.size(-1))
-        imputation_tokens = self._build_imputation(text_embeddings, txt_conf, evidence_embeddings, gates) if self.config.enable_imputation else text_embeddings.new_zeros(text_embeddings.size(0), 0, text_embeddings.size(-1))
-        augmented_inputs = torch.cat([prefix_tokens, text_embeddings, imputation_tokens], dim=1)
+        prefix_tokens = (
+            self._build_prefix(evidence_embeddings)
+            if (self.config.enable_prefix and evidence_embeddings.numel() != 0)
+            else torch.zeros(text_embeddings.size(0), 0, text_embeddings.size(-1), device=device, dtype=torch.float32)
+        )
+        # If there is no evidence (e.g., retrieval disabled), do NOT append dummy imputation tokens.
+        # Otherwise, the positional layout shifts even though gates drive them to ~0.
+        imputation_tokens = (
+            self._build_imputation(text_embeddings.to(device=device).float(), txt_conf, evidence_embeddings, gates)
+            if (self.config.enable_imputation and evidence_embeddings.numel() != 0)
+            else torch.zeros(text_embeddings.size(0), 0, text_embeddings.size(-1), device=device, dtype=torch.float32)
+        )
+        augmented_inputs = torch.cat([prefix_tokens, text_embeddings.to(device=device).float(), imputation_tokens], dim=1)
         augmented_attention = torch.cat(
             [
-                torch.ones(text_embeddings.size(0), prefix_tokens.size(1), device=text_embeddings.device, dtype=text_attention.dtype),
+                torch.ones(text_embeddings.size(0), prefix_tokens.size(1), device=device, dtype=text_attention.dtype),
                 text_attention,
-                torch.ones(text_embeddings.size(0), imputation_tokens.size(1), device=text_embeddings.device, dtype=text_attention.dtype),
+                torch.ones(text_embeddings.size(0), imputation_tokens.size(1), device=device, dtype=text_attention.dtype),
             ],
             dim=1,
         )
@@ -160,9 +183,9 @@ class SelectiveReconstruction(nn.Module):
             augmented_inputs = self.memory(augmented_inputs, evidence_embeddings.squeeze(2), gates[:, 0])
 
         return {
-            "inputs_embeds": augmented_inputs,
+            "inputs_embeds": augmented_inputs.to(dtype=base_dtype),
             "attention_mask": augmented_attention,
-            "gates": gates,
+            "gates": gates.to(dtype=base_dtype),
         }
 
     def _build_prefix(self, evidence_embeddings: torch.Tensor) -> torch.Tensor:
@@ -225,10 +248,10 @@ class TriPathReasoner(nn.Module):
 
     def forward(self, inputs_embeds: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> torch.Tensor:
         # Build key padding mask: True for pads
-        self.encoder = self.encoder.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-        self.layer_norm = self.layer_norm.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
+        base_dtype = inputs_embeds.dtype
         key_padding = None
         if attention_mask is not None:
             key_padding = attention_mask == 0
-        refined = self.encoder(inputs_embeds, src_key_padding_mask=key_padding)
-        return self.layer_norm(refined)
+        refined = self.encoder(inputs_embeds.float(), src_key_padding_mask=key_padding)
+        refined = self.layer_norm(refined)
+        return refined.to(dtype=base_dtype)

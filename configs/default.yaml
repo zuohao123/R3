@@ -52,6 +52,9 @@ training:
   fp16: false            # 关闭 AMP，使用 fp32 稳定对齐基座
   grad_accum_steps: 6    # batch=4，累积 6，等效全局 batch≈24
   grad_checkpoint: false  # 先关闭以规避 dtype/backward 问题，显存不足再开启
+  use_chat_template: true
+  lr_lora_mult: 1.0
+  lr_r3_mult: 1.0
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_default
   num_workers: 2
