@@ -1,11 +1,27 @@
-torch>=2.1
+#
+# IMPORTANT (CUDA / 云服务器):
+# - 强烈建议不要在此文件里通过 pip 安装/升级 torch/torchvision/transformers，
+#   使用你镜像/容器里预装且匹配 CUDA 的版本（否则极易出现 nms/operator 缺失、TE 符号错误、NumPy ABI 不兼容等问题）。
+# - 下面只放与本仓库脚本直接相关、且相对稳定的“上层依赖”。
+#
+# 参考已验证组合（你日志里出现过）：
+#   torch 2.2.2+cu118 / torchvision 0.17.2+cu118 / numpy 1.26.3
+#
+
 pyyaml>=6.0
-numpy>=1.24,<2.0  # Added version constraint to solve compatibility issues
-scipy>=1.10,<1.14  # Added version constraint to solve compatibility issues
+numpy==1.26.3
+scipy<1.14
 pillow>=10.0
-transformers @ git+https://github.com/huggingface/transformers.git
-peft>=0.6.0  # Updated version number
-accelerate>=0.20.0  # Added missing package
-scikit-learn>=1.3.0  # Added missing package
-datasets>=2.16.0  # HF dataset ingestion for parquet pipelines
-bitsandbytes>=0.41.1  # 4/8bit 量化加载
+tqdm>=4.66.0
+
+# HuggingFace PEFT/训练栈（版本不强行钉死，避免与系统 transformers 冲突）
+accelerate>=0.20.0
+peft>=0.6.0
+
+# 可选：生成伪文本（OCR/caption）可能会用到
+requests>=2.31.0
+# pytesseract
+# paddleocr
+
+# 可选：量化（本项目默认关闭量化以对齐基座/评测精度）
+# bitsandbytes>=0.41.1
