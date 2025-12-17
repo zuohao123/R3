@@ -137,10 +137,32 @@ class R3Dataset(Dataset):
     def _load_image(path: Optional[str]) -> Optional[Image.Image]:
         if not path:
             return None
+        candidates = []
         try:
-            return Image.open(path).convert("RGB")
+            candidates.append(Path(path))
         except Exception:
             return None
+        dup_fix = {
+            "documents/documents": "documents",
+            "charts/charts": "charts",
+            "images/images": "images",
+            "pics/pics": "pics",
+            "documents/": "documents/",
+            "charts/": "charts/",
+        }
+        for dup, fix in dup_fix.items():
+            if dup in path:
+                try:
+                    candidates.append(Path(path.replace(dup, fix, 1)))
+                except Exception:
+                    pass
+        for cand in candidates:
+            if cand.exists():
+                try:
+                    return Image.open(cand).convert("RGB")
+                except Exception:
+                    continue
+        return None
 
 
 def collate_fn(batch: List[Dict]) -> Dict:
