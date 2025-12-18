@@ -1,7 +1,7 @@
-# R³ 训练/评测大表（4×V100 32GB）
+# R³ 训练/评测大表（推荐 8×V100 32GB）
 
 ## 资源与前置
-- 硬件：4×V100 32GB，CPU 64c，RAM 128GiB。
+- 硬件：推荐 8×V100 32GB（单机），CPU 64c，RAM 128GiB。（4 卡同机也可跑，吞吐更低）
 - 模型：`./models/Qwen3-VL-8B-Instruct`（本地权重）。
 - 数据：`./data_pipeline/data/{docvqa,infovqa,chartqa}`（train/val），伪文本库 `./artifacts/pseudo_text_all_train.jsonl`。
 - 依赖：`pip install -r requirements.txt`。
@@ -17,16 +17,27 @@
 - `dtype=fp16` + `fp16: true`（AMP）：与基座/评测一致（fp16 权重），同时显存更省、速度更快；无量化。
 - lr：Stage1 8e-5；Stage2 5e-5；Stage3 3e-5；wd=0.01；warmup 5%/8%。
 - 分组 LR：Stage2/3 默认 `lr_r3_mult=2.0`（R³模块更快学），`lr_lora_mult=0.5/0.3`（LoRA 更稳）。
-- `device_map=auto`：单进程时做模型并行；DDP 时会自动映射到 `LOCAL_RANK` 的单卡（不会跨卡切分）。
+- `device_map=auto`：DDP 时会自动映射到 `LOCAL_RANK` 的单卡（不会跨卡切分）。
+- 建议环境变量：`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`（降低碎片化导致的 alloc fail）。
+
+## 阶段目标自检（确认 R³ 真正在训练）
+
+| 阶段 | 目标 | 关键开关（configs） | 是否走 R³ 路径 | loss 是否包含 | 你应该在日志里看到 |
+| --- | --- | --- | --- | --- | --- |
+| Stage1（干净） | 对齐/强化基座在 3 数据集上的 QA 能力 | `apply_corruption=false`；`enable_retrieval=false`；`enable_consistency=false` | 基本等价“只用基座+LoRA”（R³模块不参与融合） | 仅 `task_loss` | `Trainable params: R3=... LoRA=...`（R3 可能存在但梯度基本为 0）+ quick_eval 基座输出正常 |
+| Stage2（轻 PMC） | 学会在轻度腐蚀下用检索补全，并保持与 clean 一致 | `apply_corruption=true`；`enable_retrieval=true`；`enable_consistency=true` | 是（retrieval→reconstruction→reasoner） | `task_loss + λ * consistency_loss` | loss 能下降；且 `Trainable params: R3=...` 非 0；腐蚀强度来自 stage2.yaml |
+| Stage3（重 PMC） | 强化鲁棒性与抗幻觉 | 同 Stage2，但腐蚀更强、`lambda_consistency` 更高 | 是 | 同 Stage2 | 评测在 `apply_corruption=true` 下相对 Stage2 更稳；stage3.yaml 腐蚀更强 |
+
+说明：`R3Trainer` 已对齐 token 布局做了标签 padding（prefix/imputation/vision 都用 `-100` 忽略），避免“插入额外 token 但 loss 仍按原文本对齐”的无效训练问题。
 
 ## 命令大表
 
 | 任务 | 目标/场景 | 配置/权重 | 命令 | 备注 |
 | --- | --- | --- | --- | --- |
-| 训练（快测） | Stage1 干净（8 卡 DDP，前台 200 步） | `configs/default.yaml` → `checkpoints/stage1_clean_ddp8` | `CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nproc_per_node=8 train_r3.py --config configs/default.yaml --device cuda --output_dir checkpoints/stage1_clean_ddp8 --log_file checkpoints/stage1_clean_ddp8/train.log --max_steps 200 --quick_eval_every 200 2>&1 \| tee checkpoints/stage1_clean_ddp8/console.log` | DDP 更快；LoRA/R³ 可训练参数 fp32，backbone fp16 |
-| 训练 | Stage1 干净多任务（正式，8 卡 DDP 后台） | `configs/default.yaml` → `checkpoints/stage1_clean_ddp8` | `mkdir -p checkpoints/stage1_clean_ddp8 && CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 nohup torchrun --nproc_per_node=8 train_r3.py --config configs/default.yaml --device cuda --output_dir checkpoints/stage1_clean_ddp8 --log_file checkpoints/stage1_clean_ddp8/train.log --max_steps 1500 --quick_eval_every 200 > checkpoints/stage1_clean_ddp8/console.log 2>&1 &` | 关闭 corruption/retrieval/consistency，lr=8e-5 |
-| 训练 | Stage2 轻 PMC（从 Stage1 续训，8 卡 DDP） | `configs/stage2.yaml` → `checkpoints/stage2_light_pmc_ddp8` | `mkdir -p checkpoints/stage2_light_pmc_ddp8 && CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 nohup torchrun --nproc_per_node=8 train_r3.py --config configs/stage2.yaml --device cuda --output_dir checkpoints/stage2_light_pmc_ddp8 --log_file checkpoints/stage2_light_pmc_ddp8/train.log --max_steps 1500 --quick_eval_every 200 --resume_from_checkpoint checkpoints/stage1_clean_ddp8/checkpoint-1500 > checkpoints/stage2_light_pmc_ddp8/console.log 2>&1 &` | 开启 corruption/retrieval/consistency，lr=5e-5 |
-| 训练 | Stage3 重 PMC（从 Stage2 续训，8 卡 DDP） | `configs/stage3.yaml` → `checkpoints/stage3_heavy_pmc_ddp8` | `mkdir -p checkpoints/stage3_heavy_pmc_ddp8 && CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 nohup torchrun --nproc_per_node=8 train_r3.py --config configs/stage3.yaml --device cuda --output_dir checkpoints/stage3_heavy_pmc_ddp8 --log_file checkpoints/stage3_heavy_pmc_ddp8/train.log --max_steps 1500 --quick_eval_every 200 --resume_from_checkpoint checkpoints/stage2_light_pmc_ddp8/checkpoint-1500 > checkpoints/stage3_heavy_pmc_ddp8/console.log 2>&1 &` | 更强腐蚀，λ_consistency=0.5，lr=3e-5 |
+| 训练（快测） | Stage1 干净（8 卡 DDP，前台 200 步） | `configs/default.yaml` → `checkpoints/stage1_clean_ddp8` | `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nproc_per_node=8 train_r3.py --config configs/default.yaml --device cuda --output_dir checkpoints/stage1_clean_ddp8 --log_file checkpoints/stage1_clean_ddp8/train.log --max_steps 200 --quick_eval_every 200 --log_interval 10 2>&1 \| tee checkpoints/stage1_clean_ddp8/console.log` | DDP 更快；`train.log` 仅 rank0 写入 |
+| 训练（脚本） | Stage1 干净（后台） | 同上 | `bash scripts/train_stage1_ddp8.sh checkpoints/stage1_clean_ddp8` | 默认 max_steps=3000，quick_eval=500 |
+| 训练（脚本） | Stage2 轻 PMC（后台，初始化自 Stage1 权重，不继承优化器） | `configs/stage2.yaml` → `checkpoints/stage2_light_pmc_ddp8` | `bash scripts/train_stage2_ddp8.sh checkpoints/stage1_clean_ddp8/checkpoint-3000 checkpoints/stage2_light_pmc_ddp8` | 用 `--init_from_checkpoint` 只加载权重，重新走 Stage2 学习率/调度 |
+| 训练（脚本） | Stage3 重 PMC（后台，初始化自 Stage2 权重） | `configs/stage3.yaml` → `checkpoints/stage3_heavy_pmc_ddp8` | `bash scripts/train_stage3_ddp8.sh checkpoints/stage2_light_pmc_ddp8/checkpoint-2000 checkpoints/stage3_heavy_pmc_ddp8` | λ_consistency 更高，腐蚀更强 |
 | 训练（备选） | 单进程模型并行（4/8 卡，避免 DDP 环境问题） | 同上 | `CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train_r3.py --config configs/default.yaml --device cuda --output_dir checkpoints/stage1_clean_mp --log_file checkpoints/stage1_clean_mp/train.log --max_steps 200 --quick_eval_every 200 2>&1 \| tee checkpoints/stage1_clean_mp/console.log` | 速度不如 DDP，但最稳；若 DDP 仍 OOM 可先用它 |
 | 评测-基座 | 干净 val（基座能力） | `configs/default.yaml` + `./models/Qwen3-VL-8B-Instruct` | `python evaluate_r3.py --config configs/default.yaml --device cuda --ckpt_dir ./models/Qwen3-VL-8B-Instruct --split val --use_chat_template --native_eval --limit 200 --log_interval 10 --log_samples 5 --errors errors_base_clean.jsonl --predictions preds_base_clean.jsonl` | 原生生成式评测，batch=1 |
 | 评测-基座 | Stage2 腐蚀 val（轻 PMC 基线） | `configs/stage2.yaml` + `./models/Qwen3-VL-8B-Instruct` | `python evaluate_r3.py --config configs/stage2.yaml --device cuda --ckpt_dir ./models/Qwen3-VL-8B-Instruct --split val --use_chat_template --native_eval --apply_corruption --limit 200 --log_interval 10 --log_samples 5 --errors errors_base_s2.jsonl --predictions preds_base_s2.jsonl` | 轻缺模态（按 stage2.yaml 的腐蚀强度） |
@@ -38,7 +49,7 @@
 
 说明：
 - `--max_steps` 可按数据量/时间调整（如 1500–3000）；或去掉则跑满 1 epoch。
-- 分阶段训练建议用 `--resume_from_checkpoint checkpoints/.../checkpoint-XXXX` 接力续训（Stage1→Stage2→Stage3）。
+- 分阶段训练建议用 `--init_from_checkpoint checkpoints/.../checkpoint-XXXX`（只继承权重，不继承优化器/调度），更符合 “阶段性策略切换”。
 - 需要后台运行直接使用 nohup，日志在 `<out_dir>/train.log`、`console.log`。
 - 评测脚本已提供 `--predictions`（全量预测）和 `--errors`（仅错误样本）方便检查。
 

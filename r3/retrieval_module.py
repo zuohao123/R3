@@ -104,7 +104,8 @@ class PseudoTextRetrievalModule(nn.Module):
         # NOTE: The embedding layer is owned by the backbone LM. Do NOT register it as a child module here,
         # otherwise it appears twice in the top-level state_dict (shared tensor), and safetensors will
         # refuse to save checkpoints. Keep a plain reference instead.
-        self._embedding_layer = embedding_layer
+        # Bypass nn.Module.__setattr__ so it won't be tracked in `self._modules`.
+        self.__dict__["_embedding_layer"] = embedding_layer
         self.query_proj = nn.Linear(config.hidden_size, config.hidden_size)
         self.evidence_proj = nn.Linear(config.hidden_size, config.hidden_size)
         self.scorer = nn.Linear(config.hidden_size, 1)

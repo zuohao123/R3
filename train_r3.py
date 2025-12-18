@@ -339,6 +339,21 @@ class R3Trainer(Trainer):
             param_groups = [{"params": [p for p in model.parameters() if p.requires_grad], "lr": base_lr, "weight_decay": wd}]
 
         self.optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.95), eps=1e-8)
+        # Rank0-only summary: confirms which parts of R³/LoRA are trainable and their scale.
+        try:
+            local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+        except Exception:
+            local_rank = -1
+        if local_rank in (-1, 0):
+            r3_numel = sum(p.numel() for p in r3_params)
+            lora_numel = sum(p.numel() for p in lora_params)
+            logging.info(
+                "Trainable params: R3=%d (lr_mult=%.3f) | LoRA+backbone-adapter=%d (lr_mult=%.3f)",
+                r3_numel,
+                float(self.lr_r3_mult),
+                lora_numel,
+                float(self.lr_lora_mult),
+            )
         return self.optimizer
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
@@ -387,9 +402,38 @@ class R3Trainer(Trainer):
             is_clean_branch=False,
         )
         # Ensure loss inputs are float32 to avoid Half/Float mismatch in backward.
-        vision_tokens = corrupted_vision.size(1)
+        vision_tokens = int(corrupted_vision.size(1))
+        # Align labels to the combined sequence layout:
+        # [prefix_tokens] + [text tokens] + [imputation tokens] + [vision tokens]
+        prefix_tokens = 0
+        imputation_tokens = 0
+        try:
+            if bool(getattr(base_model.config, "enable_retrieval", False)):
+                # Prefix length is bounded by top_k (retrieval returns top-k evidence vectors).
+                top_k = int(getattr(base_model.config, "top_k", 0))
+                max_evidence = 0
+                for entries in corrupted_pseudo:
+                    max_evidence = max(max_evidence, sum(1 for t in entries if t))
+                if max_evidence <= 0:
+                    max_evidence = 1
+                if bool(getattr(base_model.config, "enable_prefix", True)):
+                    prefix_len_cfg = int(getattr(getattr(base_model, "reconstruction", None).config, "prefix_length", 0))
+                    prefix_tokens = min(top_k, max_evidence, prefix_len_cfg) if top_k > 0 else 0
+                if bool(getattr(base_model.config, "enable_imputation", True)):
+                    imputation_tokens = int(
+                        getattr(getattr(base_model, "reconstruction", None).config, "imputation_tokens", 0)
+                    )
+        except Exception:
+            prefix_tokens = 0
+            imputation_tokens = 0
         student_logits = student_out["logits"].float()
-        loss_task = self._causal_ce(student_logits, corrupted_tokens["labels"], vision_tokens)
+        loss_task = self._causal_ce(
+            student_logits,
+            corrupted_tokens["labels"],
+            prefix_tokens=prefix_tokens,
+            imputation_tokens=imputation_tokens,
+            vision_tokens=vision_tokens,
+        )
         if teacher_out is None:
             loss_consistency = torch.zeros((), device=student_logits.device, dtype=torch.float32)
         else:
@@ -435,13 +479,22 @@ class R3Trainer(Trainer):
             pass
 
     @staticmethod
-    def _causal_ce(logits: torch.Tensor, labels: torch.Tensor, vision_tokens: int = 0) -> torch.Tensor:
+    def _causal_ce(
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        prefix_tokens: int = 0,
+        imputation_tokens: int = 0,
+        vision_tokens: int = 0,
+    ) -> torch.Tensor:
         """
         Manual causal LM loss with label shift, ignoring -100.
         """
         labels = labels.to(logits.device)
-        if vision_tokens > 0:
-            labels = F.pad(labels, (0, vision_tokens), value=-100)
+        if prefix_tokens > 0:
+            labels = F.pad(labels, (prefix_tokens, 0), value=-100)
+        tail = int(imputation_tokens) + int(vision_tokens)
+        if tail > 0:
+            labels = F.pad(labels, (0, tail), value=-100)
         # Align lengths if still mismatched (truncate or pad labels).
         seq_len = logits.size(1)
         if labels.size(1) < seq_len:
@@ -559,6 +612,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to a HuggingFace Trainer checkpoint dir (e.g., checkpoint-1000) to resume from.",
     )
+    parser.add_argument(
+        "--init_from_checkpoint",
+        type=Path,
+        default=None,
+        help="Optional path to a checkpoint dir/file to initialize model weights from (does NOT resume optimizer/scheduler).",
+    )
     return parser.parse_args()
 
 
@@ -597,8 +656,10 @@ def main() -> None:
     #
     # 多卡训练 (torchrun 自动启用 DDP):
     # torchrun --nproc_per_node=4 train_r3.py --config configs/default.yaml --device cuda --output_dir checkpoints/r3_lora
+    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
     log_handlers = [logging.StreamHandler()]
-    if args.log_file:
+    # In DDP, only rank0 writes train.log to avoid interleaved / duplicated logs.
+    if args.log_file and local_rank in (-1, 0):
         args.log_file.parent.mkdir(parents=True, exist_ok=True)
         log_handlers.append(logging.FileHandler(args.log_file, mode="w"))
     logging.basicConfig(
@@ -700,9 +761,61 @@ def main() -> None:
         retrieval_cache_path=model_section.get("retrieval_cache_path"),
         retrieval_corpus_path=model_section.get("retrieval_corpus_path"),
     )
+    logging.info(
+        "Stage config: apply_corruption=%s | R3(corr=%s retr=%s prefix=%s mem=%s imp=%s cons=%s λ=%.3f top_k=%d) | "
+        "dtype=%s fp16_amp=%s | vision_tokens=%s | per_device_bs=%s grad_accum=%s",
+        str(bool(any((entry or {}).get("apply_corruption", True) for entry in (multi_cfg or [dataset_section])))),
+        str(bool(model_cfg.enable_corruption)),
+        str(bool(model_cfg.enable_retrieval)),
+        str(bool(model_cfg.enable_prefix)),
+        str(bool(model_cfg.enable_memory)),
+        str(bool(model_cfg.enable_imputation)),
+        str(bool(model_cfg.enable_consistency)),
+        float(model_cfg.lambda_consistency),
+        int(model_cfg.top_k),
+        str(model_cfg.dtype),
+        str(bool(training_section.get("fp16", False))),
+        str(cfg["model"].get("vision_tokens", 16)),
+        str(dataset_section.get("batch_size", 1)),
+        str(training_section.get("grad_accum_steps", 1)),
+    )
     logging.info("Loading model: %s (provider=%s)", model_cfg.model_name, model_cfg.provider)
     model = R3Model(model_cfg)
     logging.info("Model initialized with backbone %s", model_cfg.model_name)
+    # Optionally initialize weights from a previous run without resuming optimizer/scheduler.
+    if args.init_from_checkpoint is not None:
+        init_path = args.init_from_checkpoint
+        ckpt_file = init_path
+        if init_path.is_dir():
+            # Prefer our trainer override output.
+            candidate_bin = init_path / "pytorch_model.bin"
+            candidate_safe = init_path / "model.safetensors"
+            if candidate_bin.exists():
+                ckpt_file = candidate_bin
+            elif candidate_safe.exists():
+                ckpt_file = candidate_safe
+            else:
+                logging.warning("init_from_checkpoint=%s has no pytorch_model.bin/model.safetensors; skip.", init_path)
+                ckpt_file = None
+        if ckpt_file is not None and ckpt_file.exists():
+            try:
+                if str(ckpt_file).endswith(".safetensors"):
+                    from safetensors.torch import load_file  # type: ignore
+
+                    state = load_file(str(ckpt_file))
+                else:
+                    state = torch.load(ckpt_file, map_location="cpu")
+                if isinstance(state, dict) and "state_dict" in state:
+                    state = state["state_dict"]
+                missing, unexpected = model.load_state_dict(state, strict=False)
+                logging.info(
+                    "Initialized model weights from %s (missing=%d unexpected=%d)",
+                    ckpt_file,
+                    len(missing),
+                    len(unexpected),
+                )
+            except Exception as exc:
+                logging.warning("Failed to init_from_checkpoint=%s: %s", ckpt_file, exc)
     # Mark as model-parallel only when the backbone is truly sharded across >1 device.
     # (In DDP, we may pass device_map={"": local_rank} which is single-device and should NOT disable DDP wrapping.)
     try:
