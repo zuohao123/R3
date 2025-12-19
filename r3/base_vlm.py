@@ -380,7 +380,23 @@ class BaseVLM(torch.nn.Module):
             bias="none",
         )
         model = get_peft_model(model, lora_config)
-        model.resize_token_embeddings(len(self.tokenizer))
+        # 避免在 device_map=auto / 模型并行场景下 resize 触发非法访问；
+        # 仅在需要且未分片时调整词表，否则保持原大小（Imputation 等不依赖新增 vocab）。
+        try:
+            need_resize = len(self.tokenizer) != model.get_input_embeddings().weight.size(0)
+        except Exception:
+            need_resize = False
+        if need_resize:
+            if self.config.device_map:
+                logger.warning(
+                    "Skip resize_token_embeddings under device_map=%s to avoid CUDA illegal access; "
+                    "tokenizer size=%d, embedding=%d. If你确实需要增词，请先在 CPU/单卡加载再切分。",
+                    str(self.config.device_map),
+                    len(self.tokenizer),
+                    model.get_input_embeddings().weight.size(0),
+                )
+            else:
+                model.resize_token_embeddings(len(self.tokenizer))
         # Keep all trainable params in fp32 so AMP/GradScaler won't hit
         # "Attempting to unscale FP16 gradients." when the backbone is fp16.
         for p in model.parameters():
