@@ -35,7 +35,7 @@ dataset:
         blur_prob: 0.7
         blur_radius: 4.5
   eval_split: val
-  batch_size: 16         # 模型并行下显存富余，提升到 2；如再 OOM 可改回 1
+  batch_size: 4        # 单进程模型并行：每步 4 条；配合 grad_accum=2 形成有效 8
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl
 model:
@@ -69,8 +69,8 @@ training:
   epochs: 1
   log_interval: 10
   fp16: true
-  grad_accum_steps: 1        # 最低累积，进一步降低显存（全局 batch≈8）
-  grad_checkpoint: false       # 关闭检查点以避免 DDP reentrant 报错
+  grad_accum_steps: 2        # batch=4, grad_accum=2 => 有效 8 样本/step
+  grad_checkpoint: false       # 模型并行下保持关闭，避免 reentrant 报错
   use_chat_template: true
   lr_lora_mult: 0.3
   lr_r3_mult: 2.0
