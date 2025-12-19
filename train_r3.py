@@ -630,6 +630,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to a checkpoint dir/file to initialize model weights from (does NOT resume optimizer/scheduler).",
     )
+    parser.add_argument(
+        "--save_steps",
+        type=int,
+        default=None,
+        help="Optional checkpoint save interval (overrides TrainingArguments default).",
+    )
     return parser.parse_args()
 
 
@@ -869,6 +875,8 @@ def main() -> None:
         # avoid safetensors shared-memory save errors due to shared embeddings (only if supported)
         save_safetensors=False,
     )
+    if args.save_steps is not None:
+        training_kwargs["save_steps"] = args.save_steps
     sig = inspect.signature(TrainingArguments.__init__)
     for k in list(training_kwargs.keys()):
         if k not in sig.parameters:

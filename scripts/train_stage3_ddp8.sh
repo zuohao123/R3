@@ -31,7 +31,7 @@ else
 fi
 INIT_CKPT="${1}"
 OUTDIR="${2:-checkpoints/stage3_heavy_pmc_ddp8}"
-MAX_STEPS="${MAX_STEPS:-2000}"
+MAX_STEPS="${MAX_STEPS:-4000}"
 QUICK_EVAL_EVERY="${QUICK_EVAL_EVERY:-500}"
 LOG_INTERVAL="${LOG_INTERVAL:-10}"
 
@@ -42,6 +42,7 @@ nohup torchrun --nproc_per_node="${NPROC_PER_NODE}" train_r3.py \
   --device cuda \
   --output_dir "${OUTDIR}" \
   --log_file "${OUTDIR}/train.log" \
+  --save_steps "${SAVE_STEPS:-5000}" \
   --init_from_checkpoint "${INIT_CKPT}" \
   --max_steps "${MAX_STEPS}" \
   --quick_eval_every "${QUICK_EVAL_EVERY}" \

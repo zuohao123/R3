@@ -35,7 +35,7 @@ dataset:
         blur_prob: 0.5
         blur_radius: 3.5
   eval_split: val
-  batch_size: 2          # 模型并行下显存富余，提升到 2；如再 OOM 可改回 1
+  batch_size: 4          # 模型并行下显存富余，提升到 2；如再 OOM 可改回 1
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl
 model:
