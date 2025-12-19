@@ -69,8 +69,8 @@ training:
   epochs: 1
   log_interval: 10
   fp16: true
-  grad_accum_steps: 2        # 降低累积以减轻优化器 step 显存（全局 batch≈16）
-  grad_checkpoint: false       # 先关闭以规避 dtype/backward 问题
+  grad_accum_steps: 1        # 最低累积，进一步降低显存（全局 batch≈8）
+  grad_checkpoint: true       # 开启以减少激活显存
   use_chat_template: true
   lr_lora_mult: 0.3
   lr_r3_mult: 2.0
