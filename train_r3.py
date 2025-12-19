@@ -445,6 +445,18 @@ class R3Trainer(Trainer):
         loss_task = loss_task.float()
         loss_consistency = loss_consistency.float()
         total_loss = (loss_task + lambda_c * loss_consistency).float()
+        # Trainer expects loss on args.device (cuda:0 for model-parallel). Move explicitly to avoid device mismatch.
+        try:
+            target_device = getattr(self.args, "device", None)
+            if target_device is None:
+                target_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            else:
+                target_device = torch.device(target_device)
+        except Exception:
+            target_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        total_loss = total_loss.to(target_device)
+        loss_task = loss_task.to(target_device)
+        loss_consistency = loss_consistency.to(target_device)
 
         outputs = {
             "task_loss": loss_task.detach(),
