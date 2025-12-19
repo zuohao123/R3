@@ -38,6 +38,13 @@ class PrefixEncoder(nn.Module):
                 self.config.hidden_size,
             )
         pooled = evidence_embeddings.mean(dim=2)
+        # 保底对齐 hidden size，防止检索返回的维度异常（如 top-k 空或量化/哈希导致维度非 hidden_size）。
+        if pooled.size(-1) != self.config.hidden_size:
+            if pooled.size(-1) > self.config.hidden_size:
+                pooled = pooled[..., : self.config.hidden_size]
+            else:
+                repeat = (self.config.hidden_size + pooled.size(-1) - 1) // pooled.size(-1)
+                pooled = pooled.repeat(1, 1, repeat)[..., : self.config.hidden_size]
         output, _ = self.gru(pooled)
         return output[:, : self.config.prefix_length, :]
 
