@@ -170,6 +170,7 @@ class SelectiveReconstruction(nn.Module):
             if (self.config.enable_prefix and evidence_embeddings.numel() != 0)
             else torch.zeros(text_embeddings.size(0), 0, text_embeddings.size(-1), device=device, dtype=torch.float32)
         )
+        prefix_tokens = self._align_batch_first(prefix_tokens, b)
         # If there is no evidence (e.g., retrieval disabled), do NOT append dummy imputation tokens.
         # Otherwise, the positional layout shifts even though gates drive them to ~0.
         imputation_tokens = (
@@ -177,6 +178,8 @@ class SelectiveReconstruction(nn.Module):
             if (self.config.enable_imputation and evidence_embeddings.numel() != 0)
             else torch.zeros(text_embeddings.size(0), 0, text_embeddings.size(-1), device=device, dtype=torch.float32)
         )
+        imputation_tokens = self._align_batch_first(imputation_tokens, b)
+        text_embeddings = self._align_batch_first(text_embeddings, b)
         augmented_inputs = torch.cat([prefix_tokens, text_embeddings.to(device=device).float(), imputation_tokens], dim=1)
         augmented_attention = torch.cat(
             [
