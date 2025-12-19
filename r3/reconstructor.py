@@ -155,6 +155,7 @@ class SelectiveReconstruction(nn.Module):
 
         # Align batch for conf and evidence_scores
         b = text_embeddings.size(0)
+        evidence_embeddings = self._align_batch_first(evidence_embeddings, b)
         img_conf = self._align_batch(img_conf.to(device=device).float(), b)
         txt_conf = self._align_batch(txt_conf.to(device=device).float(), b)
         evidence_scores = self._align_batch(evidence_scores, b)
@@ -229,6 +230,18 @@ class SelectiveReconstruction(nn.Module):
         if t.size(0) == 1:
             return t.expand(target_b, *([-1] * (t.dim() - 1)))
         # truncate to smallest to avoid shape mismatch
+        min_b = min(target_b, t.size(0))
+        return t[:min_b]
+
+    @staticmethod
+    def _align_batch_first(t: torch.Tensor, target_b: int) -> torch.Tensor:
+        """
+        Align batch dim for evidence tensors (b, evidences, ..., dim). If batch=1, expand; else truncate.
+        """
+        if t.size(0) == target_b:
+            return t
+        if t.size(0) == 1:
+            return t.expand(target_b, *t.shape[1:])
         min_b = min(target_b, t.size(0))
         return t[:min_b]
 
