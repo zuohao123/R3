@@ -35,7 +35,7 @@ dataset:
         blur_prob: 0.7
         blur_radius: 4.5
   eval_split: val
-  batch_size: 1          # 8×V100 DDP 安全起步；显存富余可到 2
+  batch_size: 2          # 模型并行下显存富余，提升到 2；如再 OOM 可改回 1
   num_workers: 2
   pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl
 model:
