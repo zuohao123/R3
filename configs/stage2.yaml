@@ -70,7 +70,7 @@ training:
   log_interval: 10
   fp16: true
   grad_accum_steps: 1    # 最低累积，进一步降低显存（全局 batch≈8）
-  grad_checkpoint: true  # 开启以减少激活显存
+  grad_checkpoint: false # 关闭检查点以避免 DDP reentrant 报错
   use_chat_template: true
   lr_lora_mult: 0.5
   lr_r3_mult: 2.0
