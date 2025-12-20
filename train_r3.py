@@ -433,6 +433,7 @@ class R3Trainer(Trainer):
             prefix_tokens=prefix_tokens,
             imputation_tokens=imputation_tokens,
             vision_tokens=vision_tokens,
+            sample_ids=inputs.get("ids"),
         )
         if teacher_out is None:
             loss_consistency = torch.zeros((), device=student_logits.device, dtype=torch.float32)
@@ -497,6 +498,7 @@ class R3Trainer(Trainer):
         prefix_tokens: int = 0,
         imputation_tokens: int = 0,
         vision_tokens: int = 0,
+        sample_ids: Optional[List[str]] = None,
     ) -> torch.Tensor:
         """
         Manual causal LM loss with label shift, ignoring -100.
@@ -517,6 +519,12 @@ class R3Trainer(Trainer):
         # Shift: predict token t using logits at t-1.
         shift_logits = logits[..., :-1, :].contiguous().float()
         shift_labels = labels[..., 1:].contiguous()
+        valid = (shift_labels != -100).sum().item()
+        if valid == 0:
+            # All tokens are masked; this batch提供不了有效监督，记录一次 warning。
+            sid = sample_ids if sample_ids is not None else []
+            logging.warning("Causal CE skipped: all labels are -100 (sample_ids=%s)", sid)
+            return logits.new_tensor(0.0)
         loss = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),
@@ -534,6 +542,14 @@ class R3Trainer(Trainer):
     ):
         questions = split["question"]
         labels_text = split.get("labels", [""] * len(questions))
+        # 防止空答案导致全 -100：遇到空字符串时替换为占位符。
+        sane_labels = []
+        for lbl in labels_text:
+            if isinstance(lbl, str) and lbl.strip() == "":
+                sane_labels.append("UNKNOWN")
+            else:
+                sane_labels.append(lbl)
+        labels_text = sane_labels
         pseudo_text = split.get("pseudo_text", [[] for _ in questions])
 
         prompts = []
