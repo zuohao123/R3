@@ -64,7 +64,7 @@ model:
   enable_memory: true
   enable_imputation: true
   enable_consistency: true
-  lambda_consistency: 0.3
+  lambda_consistency: 0.2          # 轻腐蚀阶段降低一致性权重，先稳住收敛
   top_k: 3
 training:
   epochs: 1
@@ -78,9 +78,9 @@ training:
   report_to: tensorboard
   logging_dir: ./checkpoints/runs_stage2
   num_workers: 2
-  learning_rate: 0.00005
+  learning_rate: 0.00004      # 稍降 lr，配合更长 warmup
   weight_decay: 0.01
-  warmup_ratio: 0.05
+  warmup_ratio: 0.1           # 增大 warmup，平滑前期
   lr_scheduler_type: cosine
 evaluation:
   split: val
