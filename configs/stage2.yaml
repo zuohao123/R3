@@ -56,6 +56,7 @@ model:
   cache_dir: ./hf_cache
   revision: null
   local_files_only: true
+  max_seq_length: 4096        # 加长序列，降低答案被截断风险
   retrieval_corpus_path: ./artifacts/pseudo_text_all_train.jsonl
   enable_corruption: true
   enable_retrieval: true
