@@ -101,6 +101,13 @@ class R3Dataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict:
         sample = copy.deepcopy(self.base[idx])
+        answer = sample.get("answer")
+        if answer is None:
+            answer = "UNKNOWN"
+        elif isinstance(answer, (list, tuple)):
+            answer = answer[0] if answer else "UNKNOWN"
+        elif not isinstance(answer, str):
+            answer = str(answer)
         pseudo_text = self._inline_pseudo_text(sample)
         # Prefer offline pseudo-text corpus if provided
         if sample.get("id") in self.pseudo_corpus:
@@ -116,7 +123,7 @@ class R3Dataset(Dataset):
         corrupted_image = self.image_corruptor(image) if (image and do_corrupt) else clean_image
         clean = {
             "question": sample["question"],
-            "labels": sample.get("answer", "UNKNOWN"),
+            "labels": answer,
             "pseudo_text": pseudo_text,
             "image_path": sample.get("image_path"),
             "image": clean_image,
@@ -125,7 +132,7 @@ class R3Dataset(Dataset):
         }
         corrupted_branch = {
             "question": sample["question"],  # 问题保持不变，仅模拟伪文本/视觉缺失
-            "labels": sample.get("answer", "UNKNOWN"),
+            "labels": answer,
             "pseudo_text": corrupted_pseudo,
             "image_path": sample.get("image_path"),
             "image": corrupted_image,

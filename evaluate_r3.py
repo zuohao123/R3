@@ -523,12 +523,10 @@ def main() -> None:
         model.eval()
         # For stage1-like configs (no corruption/retrieval), prefer native generate on base_vlm.
         try:
-            use_native_generate = (
-                not args.native_eval
-                and not apply_corruption
-                and not bool(getattr(model.config, "enable_retrieval", False))
-                and not bool(getattr(model.config, "enable_corruption", False))
-            )
+            retrieval_enabled = bool(getattr(model.config, "enable_retrieval", False)) and not args.disable_retrieval
+            # When retrieval is disabled, the R3 wrapper reduces to the base VLM.
+            # In that case, prefer generate-based eval (even under corruption) for fair comparison.
+            use_native_generate = (not args.native_eval) and (not retrieval_enabled)
         except Exception:
             use_native_generate = False
 
