@@ -387,8 +387,14 @@ class R3Trainer(Trainer):
 
         corrupted_split = inputs["corrupted"]
 
+        use_pseudo_text = bool(getattr(base_model.config, "enable_retrieval", False))
         corrupted_tokens, corrupted_pseudo = self._tokenize_branch(
-            tokenizer, corrupted_split, max_length, device, use_chat_template=self.use_chat_template
+            tokenizer,
+            corrupted_split,
+            max_length,
+            device,
+            use_chat_template=self.use_chat_template,
+            use_pseudo_text=use_pseudo_text,
         )
         corrupted_vision = self._get_vision_embeddings(base_model, corrupted_split, device)
 
@@ -412,7 +418,12 @@ class R3Trainer(Trainer):
         if lambda_c > 0.0:
             clean_split = inputs["clean"]
             clean_tokens, clean_pseudo = self._tokenize_branch(
-                tokenizer, clean_split, max_length, device, use_chat_template=self.use_chat_template
+                tokenizer,
+                clean_split,
+                max_length,
+                device,
+                use_chat_template=self.use_chat_template,
+                use_pseudo_text=use_pseudo_text,
             )
             clean_vision = self._get_vision_embeddings(base_model, clean_split, device)
             with torch.no_grad():
@@ -569,6 +580,7 @@ class R3Trainer(Trainer):
         max_length: int,
         device: torch.device,
         use_chat_template: bool = False,
+        use_pseudo_text: bool = True,
     ):
         questions = split["question"]
         labels_text = split.get("labels", [""] * len(questions))
@@ -580,7 +592,7 @@ class R3Trainer(Trainer):
             else:
                 sane_labels.append(lbl)
         labels_text = sane_labels
-        pseudo_text = split.get("pseudo_text", [[] for _ in questions])
+        pseudo_text = split.get("pseudo_text", [[] for _ in questions]) if use_pseudo_text else [[] for _ in questions]
 
         prompts = []
         for q, pseudo in zip(questions, pseudo_text):
@@ -798,6 +810,9 @@ def main() -> None:
         # Corruption configs
         apply_corr = section.get("apply_corruption", True)
         pt_drop = section.get("pseudo_text_drop_prob", 0.3)
+        pt_max_items = section.get("pseudo_text_max_items")
+        pt_max_chars = section.get("pseudo_text_max_chars")
+        corr_prob = section.get("corruption_prob", 1.0)
         img_corr_cfg = section.get("image_corruption", {})
         image_corruptor = ImageCorruptor(
             ImageCorruptionConfig(
@@ -820,6 +835,9 @@ def main() -> None:
             image_corruptor=image_corruptor,
             pseudo_text_corruptor=pseudo_text_corruptor,
             pseudo_text_drop_prob=pt_drop,
+            pseudo_text_max_items=pt_max_items,
+            pseudo_text_max_chars=pt_max_chars,
+            corruption_prob=corr_prob,
         )
 
     multi_cfg = dataset_section.get("multi")

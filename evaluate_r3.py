@@ -289,10 +289,17 @@ def build_prompts(questions: List[str], pseudo_batch: List[List[str]], labels: L
     return prompts
 
 
-def tokenize_with_template(split: Dict, tokenizer, max_length: int, device: torch.device, use_chat_template: bool):
+def tokenize_with_template(
+    split: Dict,
+    tokenizer,
+    max_length: int,
+    device: torch.device,
+    use_chat_template: bool,
+    use_pseudo_text: bool = True,
+):
     questions = split["question"]
     labels_text = split.get("labels", [""] * len(questions))
-    pseudo_text = split.get("pseudo_text", [[] for _ in questions])
+    pseudo_text = split.get("pseudo_text", [[] for _ in questions]) if use_pseudo_text else [[] for _ in questions]
 
     prompts = build_prompts(questions, pseudo_text, labels_text, tokenizer, use_chat_template)
     prompt_texts = [p for p, _ in prompts]
@@ -369,6 +376,8 @@ def main() -> None:
     # Build corruption configs for eval (stage2/stage3 yaml include per-dataset settings under dataset.multi).
     pseudo_drop = dataset_cfg.get("pseudo_text_drop_prob", 0.3)
     image_corr_cfg = dataset_cfg.get("image_corruption", {}) or {}
+    pseudo_text_max_items = dataset_cfg.get("pseudo_text_max_items")
+    pseudo_text_max_chars = dataset_cfg.get("pseudo_text_max_chars")
     if "multi" in dataset_cfg:
         chosen = None
         if dataset_type != "auto":
@@ -380,6 +389,8 @@ def main() -> None:
             chosen = dataset_cfg["multi"][0]
         pseudo_drop = chosen.get("pseudo_text_drop_prob", pseudo_drop)
         image_corr_cfg = chosen.get("image_corruption", image_corr_cfg) or image_corr_cfg
+        pseudo_text_max_items = chosen.get("pseudo_text_max_items", pseudo_text_max_items)
+        pseudo_text_max_chars = chosen.get("pseudo_text_max_chars", pseudo_text_max_chars)
 
     eval_image_corruptor = None
     eval_pseudo_corruptor = None
@@ -402,6 +413,8 @@ def main() -> None:
         pseudo_corpus=pseudo_corpus,
         image_corruptor=eval_image_corruptor,
         pseudo_text_corruptor=eval_pseudo_corruptor,
+        pseudo_text_max_items=pseudo_text_max_items,
+        pseudo_text_max_chars=pseudo_text_max_chars,
     )
     if args.limit:
         dataset = Subset(dataset, list(range(min(args.limit, len(dataset)))))
@@ -660,8 +673,14 @@ def main() -> None:
             max_len = getattr(model.config, "max_seq_length", 2048)
             from train_r3 import R3Trainer  # reuse vision utilities
 
+            use_pseudo_text = bool(getattr(model.config, "enable_retrieval", False)) and not args.disable_retrieval
             corrupted_tokens, corrupted_pseudo = tokenize_with_template(
-                corrupted_split, tokenizer, max_len, device, use_chat_template=use_chat_template
+                corrupted_split,
+                tokenizer,
+                max_len,
+                device,
+                use_chat_template=use_chat_template,
+                use_pseudo_text=use_pseudo_text,
             )
             corrupted_vision = R3Trainer._get_vision_embeddings(model, corrupted_split, device)
             student_out = model(
