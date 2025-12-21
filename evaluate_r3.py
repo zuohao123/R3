@@ -103,10 +103,17 @@ def anls(pred: str, target: str, threshold: float = 0.5) -> float:
 
 
 def decode_predictions(logits: torch.Tensor, labels: torch.Tensor, tokenizer) -> List[str]:
-    pred_ids = logits.argmax(dim=-1)
+    """
+    Decode predictions aligned with causal LM shift.
+    logits[t] predicts token at t+1, so we shift both logits and labels by 1.
+    """
+    if logits.size(1) <= 1:
+        return ["" for _ in range(logits.size(0))]
+    shift_logits = logits[:, :-1, :]
+    shift_labels = labels[:, 1:]
+    pred_ids = shift_logits.argmax(dim=-1)
     predictions: List[str] = []
-    for row_pred, row_label in zip(pred_ids, labels):
-        # Align lengths: pad/truncate mask to match logits length.
+    for row_pred, row_label in zip(pred_ids, shift_labels):
         mask = row_label != -100
         if mask.size(0) < row_pred.size(0):
             pad = torch.zeros(row_pred.size(0) - mask.size(0), dtype=mask.dtype, device=mask.device)
@@ -433,6 +440,7 @@ def main() -> None:
     processor = None
     tokenizer = None
     model = None
+    use_native_generate = False
 
     if args.native_eval:
         model_path = model_section.get("name", "Qwen/Qwen3-VL-8B-Instruct")
@@ -513,6 +521,16 @@ def main() -> None:
             elif ckpt_path is not None:
                 print(f"[WARN] Checkpoint path {ckpt_path} not found, skip loading finetuned weights.")
         model.eval()
+        # For stage1-like configs (no corruption/retrieval), prefer native generate on base_vlm.
+        try:
+            use_native_generate = (
+                not args.native_eval
+                and not apply_corruption
+                and not bool(getattr(model.config, "enable_retrieval", False))
+                and not bool(getattr(model.config, "enable_corruption", False))
+            )
+        except Exception:
+            use_native_generate = False
 
     # Metric switches by dataset type
     ds_lower = str(dataset_type).lower()
@@ -530,6 +548,97 @@ def main() -> None:
 
     with torch.no_grad():
         for idx, batch in enumerate(tqdm(dataloader, desc="eval", total=len(dataloader))):
+            if use_native_generate:
+                split_data = batch["clean"]
+                q = split_data["question"][0]
+                img = split_data["images"][0] if split_data["images"][0] is not None else None
+                img_path = split_data["image_path"][0] if isinstance(split_data.get("image_path"), list) else None
+                if img is None and img_path:
+                    from PIL import Image
+                    cand = Path(img_path)
+                    if not cand.is_absolute():
+                        cand = project_root / cand
+                    if cand.exists():
+                        img = Image.open(cand).convert("RGB")
+                        img_path = str(cand)
+                if img is None:
+                    continue
+                base_model = model.module if hasattr(model, "module") else model
+                tokenizer = base_model.base_vlm.tokenizer
+                processor = base_model.base_vlm.processor
+                if processor is None:
+                    processor = AutoProcessor.from_pretrained(
+                        getattr(base_model.config, "model_name", model_section.get("name")),
+                        trust_remote_code=True,
+                    )
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image"},
+                            {"type": "text", "text": q + "\nPlease answer with the short answer only."},
+                        ],
+                    }
+                ]
+                if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+                    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                else:
+                    prompt = f"Question: {q}\nAnswer:"
+                try:
+                    dev = base_model.base_vlm.model.get_input_embeddings().weight.device
+                except Exception:
+                    dev = next(base_model.base_vlm.model.parameters()).device
+                inputs = processor(text=[prompt], images=[img], return_tensors="pt").to(dev)
+                input_len = inputs["input_ids"].shape[1]
+                gen = base_model.base_vlm.model.generate(
+                    **inputs,
+                    max_new_tokens=64,
+                    do_sample=False,
+                    num_beams=1,
+                    eos_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+                pred_text = tokenizer.decode(gen[0][input_len:], skip_special_tokens=True).strip()
+                pred_text = first_sentence(clean_generation_output(pred_text))
+                target = split_data["labels"][0]
+                pred_for_score = best_span_match(pred_text, target)
+                total += 1
+                if is_correct(pred_for_score, target):
+                    correct += 1
+                if is_docvqa:
+                    anls_sum += anls(pred_for_score, target)
+                if args.predictions:
+                    dump_rows.append(
+                        {
+                            "id": batch["ids"][0],
+                            "image_path": img_path,
+                            "prediction": pred_text,
+                            "scored_prediction": pred_for_score,
+                            "target": target,
+                        }
+                    )
+                if args.errors and not is_correct(pred_for_score, target):
+                    error_rows.append(
+                        {
+                            "id": batch["ids"][0],
+                            "image_path": img_path,
+                            "prediction": pred_text,
+                            "scored_prediction": pred_for_score,
+                            "target": target,
+                        }
+                    )
+                if args.log_interval and (idx + 1) % args.log_interval == 0:
+                    interim_acc = correct / max(1, total)
+                    msg = f"[eval] step {idx+1}/{len(dataloader)} acc={interim_acc:.4f}"
+                    if is_docvqa:
+                        interim_anls = anls_sum / max(1, total)
+                        msg += f" anls={interim_anls:.4f}"
+                    print(msg)
+                    if args.log_samples:
+                        print(
+                            f"  id={batch['ids'][0]} | img={img_path} | pred_raw={pred_text} | pred_scored={pred_for_score} | target={target}"
+                        )
+                continue
             if args.native_eval:
                 # Expect batch_size=1; use corrupted split when apply_corruption is enabled
                 split_key = "corrupted" if apply_corruption else "clean"
