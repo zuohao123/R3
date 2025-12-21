@@ -6,7 +6,10 @@ dataset:
       split: train
       weight: 4
       apply_corruption: true
+      corruption_prob: 0.7
       pseudo_text_drop_prob: 0.2
+      pseudo_text_max_items: 12
+      pseudo_text_max_chars: 96
       image_corruption:
         occlusion_prob: 0.5
         occlusion_ratio: 0.25
@@ -17,7 +20,10 @@ dataset:
       split: train
       weight: 3
       apply_corruption: true
+      corruption_prob: 0.7
       pseudo_text_drop_prob: 0.2
+      pseudo_text_max_items: 12
+      pseudo_text_max_chars: 96
       image_corruption:
         occlusion_prob: 0.5
         occlusion_ratio: 0.25
@@ -28,7 +34,10 @@ dataset:
       split: train
       weight: 3
       apply_corruption: true
+      corruption_prob: 0.7
       pseudo_text_drop_prob: 0.2
+      pseudo_text_max_items: 12
+      pseudo_text_max_chars: 96
       image_corruption:
         occlusion_prob: 0.5
         occlusion_ratio: 0.25
@@ -65,6 +74,8 @@ model:
   enable_imputation: true
   enable_consistency: true
   lambda_consistency: 0.2          # 轻腐蚀阶段降低一致性权重，先稳住收敛
+  consistency_start_step: 1000
+  consistency_ramp_steps: 2000
   top_k: 3
 training:
   epochs: 1

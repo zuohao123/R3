@@ -33,6 +33,7 @@ elif not hasattr(torch.compiler, "is_compiling"):  # type: ignore[attr-defined]
     torch.compiler.is_compiling = lambda: False  # type: ignore[attr-defined]
 
 from torch.utils.data import DataLoader, Subset
+import torch.nn.functional as F
 import os
 from tqdm import tqdm
 from transformers import AutoProcessor, AutoTokenizer, AutoModelForVision2Seq
@@ -119,6 +120,30 @@ def decode_predictions(logits: torch.Tensor, labels: torch.Tensor, tokenizer) ->
         text = tokenizer.decode(ids, skip_special_tokens=True).strip()
         predictions.append(text)
     return predictions
+
+
+def align_labels_for_r3(
+    labels: torch.Tensor,
+    prefix_tokens: int,
+    imputation_tokens: int,
+    vision_tokens: int,
+    seq_len: int,
+) -> torch.Tensor:
+    """
+    Pad/trim labels to match the combined sequence layout:
+    [prefix] + [text] + [imputation] + [vision]
+    """
+    labels = labels.clone()
+    if prefix_tokens > 0:
+        labels = F.pad(labels, (prefix_tokens, 0), value=-100)
+    tail = int(imputation_tokens) + int(vision_tokens)
+    if tail > 0:
+        labels = F.pad(labels, (0, tail), value=-100)
+    if labels.size(1) < seq_len:
+        labels = F.pad(labels, (0, seq_len - labels.size(1)), value=-100)
+    elif labels.size(1) > seq_len:
+        labels = labels[:, :seq_len]
+    return labels
 
 
 def normalize_text(text: str) -> str:
@@ -253,6 +278,7 @@ def build_prompts(questions: List[str], pseudo_batch: List[List[str]], labels: L
         pseudo_fmt.append("\n".join([p for p in pseudo if p]))
     for q, pseudo, lbl in zip(questions, pseudo_fmt, labels):
         user_content = f"{pseudo}\nQuestion: {q}".strip() if pseudo else f"Question: {q}"
+        user_content = user_content + "\nPlease answer with the short answer only."
         if use_chat_template:
             messages = [{"role": "user", "content": user_content}]
             prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -304,6 +330,8 @@ def main() -> None:
     cfg = load_yaml(args.config)
     dataset_cfg = cfg.get("dataset", {})
     eval_cfg = cfg.get("evaluation", {})
+    training_cfg = cfg.get("training", {})
+    use_chat_template = bool(args.use_chat_template or training_cfg.get("use_chat_template", False))
     split = args.split or eval_cfg.get("split") or dataset_cfg.get("eval_split", "val")
     apply_corruption = args.apply_corruption or eval_cfg.get("apply_corruption", False)
     if args.disable_corruption:
@@ -633,7 +661,7 @@ def main() -> None:
             from train_r3 import R3Trainer  # reuse vision utilities
 
             corrupted_tokens, corrupted_pseudo = tokenize_with_template(
-                corrupted_split, tokenizer, max_len, device, use_chat_template=args.use_chat_template
+                corrupted_split, tokenizer, max_len, device, use_chat_template=use_chat_template
             )
             corrupted_vision = R3Trainer._get_vision_embeddings(model, corrupted_split, device)
             student_out = model(
@@ -647,11 +675,43 @@ def main() -> None:
 
             # Manual CE loss to avoid shape mismatch; mirror training logic.
             vision_tokens = corrupted_vision.size(1)
-            loss = R3Trainer._causal_ce(student_out["logits"].float(), corrupted_tokens["labels"], vision_tokens)
+            prefix_tokens = 0
+            imputation_tokens = 0
+            try:
+                retrieval = student_out.get("retrieval") if isinstance(student_out, dict) else None
+                evidence_emb = retrieval.get("embeddings") if isinstance(retrieval, dict) else None
+                evidence_count = 0
+                if torch.is_tensor(evidence_emb) and evidence_emb.numel() > 0:
+                    evidence_count = int(evidence_emb.size(1))
+                if evidence_count > 0:
+                    if bool(getattr(model.config, "enable_prefix", True)):
+                        prefix_len_cfg = int(getattr(getattr(model, "reconstruction", None).config, "prefix_length", 0))
+                        prefix_tokens = min(prefix_len_cfg, evidence_count) if prefix_len_cfg > 0 else 0
+                    if bool(getattr(model.config, "enable_imputation", True)):
+                        imputation_tokens = int(
+                            getattr(getattr(model, "reconstruction", None).config, "imputation_tokens", 0)
+                        )
+            except Exception:
+                prefix_tokens = 0
+                imputation_tokens = 0
+            loss = R3Trainer._causal_ce(
+                student_out["logits"].float(),
+                corrupted_tokens["labels"],
+                prefix_tokens=prefix_tokens,
+                imputation_tokens=imputation_tokens,
+                vision_tokens=int(vision_tokens),
+            )
             total_loss += loss.item()
             total_batches += 1
 
-            raw_predictions = decode_predictions(student_out["logits"], corrupted_tokens["labels"], tokenizer)
+            aligned_labels = align_labels_for_r3(
+                corrupted_tokens["labels"],
+                prefix_tokens=prefix_tokens,
+                imputation_tokens=imputation_tokens,
+                vision_tokens=int(vision_tokens),
+                seq_len=student_out["logits"].size(1),
+            )
+            raw_predictions = decode_predictions(student_out["logits"], aligned_labels, tokenizer)
             predictions = [first_sentence(clean_generation_output(p)) for p in raw_predictions]
             scored_preds = [best_span_match(p, t) for p, t in zip(predictions, corrupted_split["labels"])]
             targets = corrupted_split["labels"]

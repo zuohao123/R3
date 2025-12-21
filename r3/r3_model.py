@@ -42,6 +42,8 @@ class R3ModelConfig:
     enable_imputation: bool = True
     enable_consistency: bool = True
     lambda_consistency: float = 0.3
+    consistency_start_step: int = 0
+    consistency_ramp_steps: int = 0
     retrieval_cache_path: Optional[str] = None
     retrieval_corpus_path: Optional[str] = None
 
@@ -96,6 +98,7 @@ class R3Model(torch.nn.Module):
                 cache_path=config.retrieval_cache_path,
             ),
             embedding_layer=self.base_vlm.model.get_input_embeddings(),
+            tokenizer=self.base_vlm.tokenizer,
         )
         self.reconstruction = SelectiveReconstruction(
             ReconstructionModuleConfig(

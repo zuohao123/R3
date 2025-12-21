@@ -23,6 +23,7 @@ class RetrievalModuleConfig:
     top_k: int = 3
     enable: bool = True
     cache_path: Optional[str] = None  # enable FAISS/vector store when set
+    max_evidence_tokens: int = 32     # max tokens per evidence string when tokenizer is available
 
 
 @dataclass
@@ -98,7 +99,7 @@ class PseudoTextRetrievalModule(nn.Module):
       - 可选 FAISS（cache_path 且安装 faiss 时）
     """
 
-    def __init__(self, config: RetrievalModuleConfig, embedding_layer: nn.Embedding) -> None:
+    def __init__(self, config: RetrievalModuleConfig, embedding_layer: nn.Embedding, tokenizer=None) -> None:
         super().__init__()
         self.config = config
         # NOTE: The embedding layer is owned by the backbone LM. Do NOT register it as a child module here,
@@ -106,6 +107,7 @@ class PseudoTextRetrievalModule(nn.Module):
         # refuse to save checkpoints. Keep a plain reference instead.
         # Bypass nn.Module.__setattr__ so it won't be tracked in `self._modules`.
         self.__dict__["_embedding_layer"] = embedding_layer
+        self.__dict__["_tokenizer"] = tokenizer
         self.query_proj = nn.Linear(config.hidden_size, config.hidden_size)
         self.evidence_proj = nn.Linear(config.hidden_size, config.hidden_size)
         self.scorer = nn.Linear(config.hidden_size, 1)
@@ -187,12 +189,29 @@ class PseudoTextRetrievalModule(nn.Module):
             for text in entries:
                 if not text:
                     continue
-                tokens = torch.tensor(
-                    [hash(text) % self._embedding_layer.num_embeddings],
-                    device=device,
-                )
-                vec = self._embedding_layer(tokens)
-                encoded_entries.append(vec.mean(dim=0))
+                vec = None
+                tokenizer = getattr(self, "_tokenizer", None)
+                if tokenizer is not None:
+                    try:
+                        tokenized = tokenizer(
+                            text,
+                            add_special_tokens=False,
+                            truncation=True,
+                            max_length=self.config.max_evidence_tokens,
+                            return_tensors="pt",
+                        )
+                        input_ids = tokenized["input_ids"].to(device=device)
+                        if input_ids.numel() > 0:
+                            vec = self._embedding_layer(input_ids).mean(dim=1).squeeze(0)
+                    except Exception:
+                        vec = None
+                if vec is None:
+                    tokens = torch.tensor(
+                        [hash(text) % self._embedding_layer.num_embeddings],
+                        device=device,
+                    )
+                    vec = self._embedding_layer(tokens).mean(dim=0)
+                encoded_entries.append(vec)
                 stored_texts.append(text)
             if not encoded_entries:
                 encoded_entries = [
@@ -296,8 +315,25 @@ class PseudoTextRetrievalModule(nn.Module):
         device = next(self._embedding_layer.parameters()).device
         vectors = []
         for text in unique_texts:
-            token = torch.tensor([hash(text) % self._embedding_layer.num_embeddings], device=device)
-            vec = self._embedding_layer(token).mean(dim=0)
+            vec = None
+            tokenizer = getattr(self, "_tokenizer", None)
+            if tokenizer is not None:
+                try:
+                    tokenized = tokenizer(
+                        text,
+                        add_special_tokens=False,
+                        truncation=True,
+                        max_length=self.config.max_evidence_tokens,
+                        return_tensors="pt",
+                    )
+                    input_ids = tokenized["input_ids"].to(device=device)
+                    if input_ids.numel() > 0:
+                        vec = self._embedding_layer(input_ids).mean(dim=1).squeeze(0)
+                except Exception:
+                    vec = None
+            if vec is None:
+                token = torch.tensor([hash(text) % self._embedding_layer.num_embeddings], device=device)
+                vec = self._embedding_layer(token).mean(dim=0)
             vectors.append(vec)
         self.external_embeddings = torch.stack(vectors).unsqueeze(0).unsqueeze(2)  # (1, evidences, 1, dim)
         self.external_texts = unique_texts

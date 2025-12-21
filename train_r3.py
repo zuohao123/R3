@@ -75,6 +75,9 @@ class R3Dataset(Dataset):
         pseudo_corpus: Optional[Dict[str, List[str]]] = None,
         image_corruptor: Optional[ImageCorruptor] = None,
         pseudo_text_corruptor: Optional[PseudoTextCorruptor] = None,
+        pseudo_text_max_items: Optional[int] = None,
+        pseudo_text_max_chars: Optional[int] = None,
+        corruption_prob: float = 1.0,
     ) -> None:
         self.base = base_dataset
         self.vision_tokens = vision_tokens
@@ -83,6 +86,9 @@ class R3Dataset(Dataset):
         self.pseudo_builder = pseudo_builder or PseudoTextBuilder()
         self.pseudo_corpus = pseudo_corpus or {}
         self.image_corruptor = image_corruptor or ImageCorruptor(ImageCorruptionConfig())
+        self.pseudo_text_max_items = pseudo_text_max_items
+        self.pseudo_text_max_chars = pseudo_text_max_chars
+        self.corruption_prob = float(corruption_prob)
         if pseudo_text_corruptor:
             self.pseudo_text_corruptor = pseudo_text_corruptor
         else:
@@ -99,14 +105,15 @@ class R3Dataset(Dataset):
         # Prefer offline pseudo-text corpus if provided
         if sample.get("id") in self.pseudo_corpus:
             pseudo_text = self.pseudo_corpus[sample["id"]]
+        pseudo_text = self._truncate_pseudo_text(pseudo_text)
         if not pseudo_text and self.pseudo_builder:
             pseudo_text = self.pseudo_builder.build(sample)
-        corrupted_pseudo = (
-            self.pseudo_text_corruptor(pseudo_text) if self.apply_corruption else pseudo_text
-        )
+        pseudo_text = self._truncate_pseudo_text(pseudo_text)
+        do_corrupt = self.apply_corruption and (random.random() < self.corruption_prob)
+        corrupted_pseudo = self.pseudo_text_corruptor(pseudo_text) if do_corrupt else pseudo_text
         image = self._load_image(sample.get("image_path"))
         clean_image = image.copy() if image else None
-        corrupted_image = self.image_corruptor(image) if (image and self.apply_corruption) else clean_image
+        corrupted_image = self.image_corruptor(image) if (image and do_corrupt) else clean_image
         clean = {
             "question": sample["question"],
             "labels": sample.get("answer", "UNKNOWN"),
@@ -126,6 +133,18 @@ class R3Dataset(Dataset):
             "hidden_size": self.hidden_size,
         }
         return {"id": sample["id"], "clean": clean, "corrupted": corrupted_branch}
+
+    def _truncate_pseudo_text(self, entries: List[str]) -> List[str]:
+        if not entries:
+            return entries
+        result = entries
+        if self.pseudo_text_max_items is not None:
+            result = result[: max(0, int(self.pseudo_text_max_items))]
+        if self.pseudo_text_max_chars is not None:
+            max_chars = int(self.pseudo_text_max_chars)
+            if max_chars > 0:
+                result = [str(t)[:max_chars] for t in result]
+        return result
 
     @staticmethod
     def _inline_pseudo_text(sample: Dict) -> List[str]:
@@ -375,6 +394,19 @@ class R3Trainer(Trainer):
 
         enable_consistency = bool(getattr(base_model.config, "enable_consistency", False))
         lambda_c = float(getattr(base_model.config, "lambda_consistency", 0.0)) if enable_consistency else 0.0
+        # Consistency warmup schedule: start after N steps, optionally ramp up over R steps.
+        if lambda_c > 0.0:
+            try:
+                start_step = int(getattr(base_model.config, "consistency_start_step", 0) or 0)
+                ramp_steps = int(getattr(base_model.config, "consistency_ramp_steps", 0) or 0)
+                global_step = int(getattr(self.state, "global_step", 0))
+                if global_step < start_step:
+                    lambda_c = 0.0
+                elif ramp_steps > 0:
+                    scale = min(1.0, float(global_step - start_step) / float(ramp_steps))
+                    lambda_c *= scale
+            except Exception:
+                pass
 
         teacher_out = None
         if lambda_c > 0.0:
@@ -403,22 +435,20 @@ class R3Trainer(Trainer):
         )
         # Ensure loss inputs are float32 to avoid Half/Float mismatch in backward.
         vision_tokens = int(corrupted_vision.size(1))
-        # Align labels to the combined sequence layout:
+        # Align labels to the combined sequence layout based on the *actual* retrieval output:
         # [prefix_tokens] + [text tokens] + [imputation tokens] + [vision tokens]
         prefix_tokens = 0
         imputation_tokens = 0
         try:
-            if bool(getattr(base_model.config, "enable_retrieval", False)):
-                # Prefix length is bounded by top_k (retrieval returns top-k evidence vectors).
-                top_k = int(getattr(base_model.config, "top_k", 0))
-                max_evidence = 0
-                for entries in corrupted_pseudo:
-                    max_evidence = max(max_evidence, sum(1 for t in entries if t))
-                if max_evidence <= 0:
-                    max_evidence = 1
+            retrieval = student_out.get("retrieval") if isinstance(student_out, dict) else None
+            evidence_emb = retrieval.get("embeddings") if isinstance(retrieval, dict) else None
+            evidence_count = 0
+            if torch.is_tensor(evidence_emb) and evidence_emb.numel() > 0:
+                evidence_count = int(evidence_emb.size(1))
+            if evidence_count > 0:
                 if bool(getattr(base_model.config, "enable_prefix", True)):
                     prefix_len_cfg = int(getattr(getattr(base_model, "reconstruction", None).config, "prefix_length", 0))
-                    prefix_tokens = min(top_k, max_evidence, prefix_len_cfg) if top_k > 0 else 0
+                    prefix_tokens = min(prefix_len_cfg, evidence_count) if prefix_len_cfg > 0 else 0
                 if bool(getattr(base_model.config, "enable_imputation", True)):
                     imputation_tokens = int(
                         getattr(getattr(base_model, "reconstruction", None).config, "imputation_tokens", 0)
@@ -586,6 +616,48 @@ class R3Trainer(Trainer):
         prompt_lengths = prompt_tokens["attention_mask"].sum(dim=1)
         for idx, length in enumerate(prompt_lengths):
             labels[idx, : length.item()] = -100
+        # If any sample has all labels masked (prompt truncated out the answer),
+        # rebuild prompts without pseudo-text for those samples to recover supervision.
+        if (labels != -100).sum(dim=1).eq(0).any():
+            fixed_pseudo = []
+            for idx, entries in enumerate(pseudo_text):
+                if (labels[idx] != -100).any():
+                    fixed_pseudo.append(entries)
+                else:
+                    fixed_pseudo.append([])  # drop pseudo-text to shorten prompt
+            prompts = []
+            for q, pseudo in zip(questions, fixed_pseudo):
+                pseudo_block = R3Trainer._format_pseudo_text(pseudo)
+                user_content = f"{pseudo_block}\nQuestion: {q}".strip() if pseudo_block else f"Question: {q}"
+                user_content = user_content + "\nPlease answer with the short answer only."
+                if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+                    messages = [{"role": "user", "content": user_content}]
+                    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                else:
+                    prompt = f"{user_content}\nAnswer:"
+                prompts.append(prompt)
+            prompt_tokens = tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+            )
+            full_text = [f"{p} {label}".strip() for p, label in zip(prompts, labels_text)]
+            text_tokens = tokenizer(
+                full_text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+            )
+            text_tokens = {k: v.to(device) for k, v in text_tokens.items()}
+            prompt_tokens = {k: v.to(device) for k, v in prompt_tokens.items()}
+            labels = text_tokens["input_ids"].clone()
+            labels[text_tokens["attention_mask"] == 0] = -100
+            prompt_lengths = prompt_tokens["attention_mask"].sum(dim=1)
+            for idx, length in enumerate(prompt_lengths):
+                labels[idx, : length.item()] = -100
         text_tokens["labels"] = labels
         return text_tokens, pseudo_text
 
@@ -794,6 +866,8 @@ def main() -> None:
         top_k=model_section.get("top_k", 3),
         retrieval_cache_path=model_section.get("retrieval_cache_path"),
         retrieval_corpus_path=model_section.get("retrieval_corpus_path"),
+        consistency_start_step=model_section.get("consistency_start_step", 0),
+        consistency_ramp_steps=model_section.get("consistency_ramp_steps", 0),
     )
     logging.info(
         "Stage config: apply_corruption=%s | R3(corr=%s retr=%s prefix=%s mem=%s imp=%s cons=%s λ=%.3f top_k=%d) | "
