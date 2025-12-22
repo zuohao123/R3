@@ -66,7 +66,7 @@ model:
   revision: null
   local_files_only: true
   max_seq_length: 8192        # 加长序列，降低答案被截断风险
-  retrieval_corpus_path: null        # Stage2 先禁用跨文档检索，减少噪声
+  retrieval_corpus_path: ./artifacts/pseudo_text_all_train.jsonl  # 评测时让 val 召回训练库
   enable_corruption: true
   enable_retrieval: true
   enable_prefix: true
