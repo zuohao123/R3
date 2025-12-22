@@ -702,6 +702,8 @@ def main() -> None:
 
     total_loss = 0.0
     total_batches = 0
+    nan_loss_batches = 0
+    nan_logits_batches = 0
     correct = 0
     total = 0
     anls_sum = 0.0
@@ -983,24 +985,31 @@ def main() -> None:
             except Exception:
                 prefix_tokens = 0
                 imputation_tokens = 0
+            logits = student_out["logits"]
+            if not torch.isfinite(logits).all():
+                nan_logits_batches += 1
+                logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
             loss = causal_ce(
-                student_out["logits"].float(),
+                logits.float(),
                 corrupted_tokens["labels"],
                 prefix_tokens=prefix_tokens,
                 imputation_tokens=imputation_tokens,
                 vision_tokens=int(vision_tokens),
             )
-            total_loss += loss.item()
-            total_batches += 1
+            if torch.isfinite(loss):
+                total_loss += loss.item()
+                total_batches += 1
+            else:
+                nan_loss_batches += 1
 
             aligned_labels = align_labels_for_r3(
                 corrupted_tokens["labels"],
                 prefix_tokens=prefix_tokens,
                 imputation_tokens=imputation_tokens,
                 vision_tokens=int(vision_tokens),
-                seq_len=student_out["logits"].size(1),
+                seq_len=logits.size(1),
             )
-            raw_predictions = decode_predictions(student_out["logits"], aligned_labels, tokenizer)
+            raw_predictions = decode_predictions(logits, aligned_labels, tokenizer)
             predictions = [first_sentence(clean_generation_output(p)) for p in raw_predictions]
             scored_preds = [best_span_match(p, t) for p, t in zip(predictions, corrupted_split["labels"])]
             targets = corrupted_split["labels"]
@@ -1057,6 +1066,10 @@ def main() -> None:
     if is_docvqa:
         anls_score = anls_sum / max(1, total)
         metrics["anls"] = round(anls_score, 4)
+    if nan_loss_batches:
+        metrics["nan_loss_batches"] = nan_loss_batches
+    if nan_logits_batches:
+        metrics["nan_logits_batches"] = nan_logits_batches
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
 
     if args.predictions and dump_rows:
