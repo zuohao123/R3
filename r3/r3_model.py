@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import logging
 import torch
 
 from r3.base_vlm import BaseVLM, BaseVLMConfig
@@ -115,8 +116,15 @@ class R3Model(torch.nn.Module):
         if config.retrieval_corpus_path:
             try:
                 self.retrieval.ingest_corpus(config.retrieval_corpus_path)
+                if self.retrieval.external_texts:
+                    logging.info(
+                        "Loaded retrieval corpus entries: %d",
+                        len(self.retrieval.external_texts),
+                    )
+                else:
+                    logging.warning("Retrieval corpus is empty: %s", config.retrieval_corpus_path)
             except Exception:
-                pass
+                logging.warning("Failed to ingest retrieval corpus: %s", config.retrieval_corpus_path)
         # Place the lightweight R³ modules on the same device as text embeddings.
         # This is critical when the backbone is loaded with `device_map="auto"` (model parallel),
         # because we won't call a global `model.to(device)` afterward.

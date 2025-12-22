@@ -693,7 +693,34 @@ def main() -> None:
     logging.info("Loading config from %s", args.config)
     cfg = load_yaml(args.config)  # 读取 YAML 配置
     dataset_section = cfg.get("dataset", {})
-    pseudo_corpus = load_pseudo_corpus(dataset_section.get("pseudo_corpus"))
+    pseudo_corpus_path = dataset_section.get("pseudo_corpus")
+    pseudo_corpus = load_pseudo_corpus(pseudo_corpus_path)
+    if pseudo_corpus:
+        logging.info("Loaded pseudo-text corpus entries: %d", len(pseudo_corpus))
+        # Fail fast if corpus exists but only contains fallback anchors like [Q]/[ID].
+        has_real_text = False
+        for entries in pseudo_corpus.values():
+            for text in entries:
+                stripped = str(text).strip()
+                if not stripped:
+                    continue
+                if not (stripped.startswith("[Q]") or stripped.startswith("[ID]")):
+                    has_real_text = True
+                    break
+            if has_real_text:
+                break
+        if not has_real_text:
+            raise ValueError(
+                "Pseudo-text corpus only contains [Q]/[ID] fallback entries. "
+                "Please regenerate OCR/Caption pseudo-text before training."
+            )
+    else:
+        if pseudo_corpus_path:
+            raise ValueError(
+                f"Pseudo-text corpus is empty or missing: {pseudo_corpus_path}. "
+                "Training is stopped to avoid fallback-only retrieval."
+            )
+        logging.warning("Pseudo-text corpus is empty; fallback pseudo-text will be used.")
     logging.info("Config loaded. Preparing datasets...")
 
     def build_single_dataset(section: Dict) -> R3Dataset:
@@ -784,6 +811,7 @@ def main() -> None:
         lora_rank=model_section.get("lora_rank", 32),
         lora_alpha=model_section.get("lora_alpha", 16),
         hidden_size=model_section.get("hidden_size", 4096),
+        max_seq_length=model_section.get("max_seq_length", 1024),
         bf16=model_section.get("bf16", True),
         dtype=model_section.get("dtype", "auto"),
         load_in_4bit=model_section.get("load_in_4bit", False),

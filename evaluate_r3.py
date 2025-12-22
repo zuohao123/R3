@@ -629,6 +629,10 @@ def main() -> None:
     if dataset_type == "auto":
         dataset_type = detect_dataset_type(dataset_root)
     pseudo_corpus = load_pseudo_corpus(dataset_cfg.get("pseudo_corpus"))
+    if pseudo_corpus:
+        print(f"[INFO] Loaded pseudo-text corpus entries: {len(pseudo_corpus)}")
+    else:
+        print("[WARN] Pseudo-text corpus is empty or missing; fallback pseudo-text will be used.")
     base_dataset = create_dataset(dataset_type, dataset_root, split=split)
 
     # Build corruption configs for eval (stage2/stage3 yaml include per-dataset settings under dataset.multi).
@@ -710,6 +714,7 @@ def main() -> None:
             lora_rank=model_section.get("lora_rank", 32),
             lora_alpha=model_section.get("lora_alpha", 16),
             hidden_size=model_section.get("hidden_size", 4096),
+            max_seq_length=model_section.get("max_seq_length", 1024),
             bf16=model_section.get("bf16", False),
             dtype=model_section.get("dtype", "auto"),
             load_in_4bit=model_section.get("load_in_4bit", False),
@@ -729,6 +734,8 @@ def main() -> None:
             enable_imputation=model_section.get("enable_imputation", True),
             enable_consistency=False if args.disable_consistency else model_section.get("enable_consistency", False),
             top_k=model_section.get("top_k", 3),
+            retrieval_cache_path=model_section.get("retrieval_cache_path"),
+            retrieval_corpus_path=model_section.get("retrieval_corpus_path"),
         )
         model = R3Model(model_cfg)
         # If the backbone is sharded via `device_map`, a global `.to(device)` will try to

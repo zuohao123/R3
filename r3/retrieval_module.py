@@ -310,6 +310,25 @@ class PseudoTextRetrievalModule(nn.Module):
                 except Exception:
                     continue
         unique_texts = [t for t in texts if t]
+        # If the corpus is token-level OCR (lots of single-word entries), coalesce into chunks.
+        if unique_texts:
+            word_counts = [len(str(t).split()) for t in unique_texts if str(t).strip()]
+            if word_counts:
+                avg_words = sum(word_counts) / len(word_counts)
+                short_ratio = sum(1 for c in word_counts if c <= 1) / len(word_counts)
+                if len(unique_texts) >= 40 and avg_words < 1.5 and short_ratio > 0.8:
+                    tokens: List[str] = []
+                    for t in unique_texts:
+                        text = str(t).strip()
+                        if not text:
+                            continue
+                        tokens.extend(text.split())
+                    chunks: List[str] = []
+                    for idx in range(0, len(tokens), 12):
+                        chunk = " ".join(tokens[idx : idx + 12]).strip()
+                        if chunk:
+                            chunks.append(chunk)
+                    unique_texts = chunks
         if not unique_texts:
             return
         device = next(self._embedding_layer.parameters()).device

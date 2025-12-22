@@ -72,9 +72,11 @@ class R3Dataset(Dataset):
         # Prefer offline pseudo-text corpus if provided
         if sample.get("id") in self.pseudo_corpus:
             pseudo_text = self.pseudo_corpus[sample["id"]]
+        pseudo_text = self._coalesce_pseudo_text(pseudo_text)
         pseudo_text = self._truncate_pseudo_text(pseudo_text)
         if not pseudo_text and self.pseudo_builder:
             pseudo_text = self.pseudo_builder.build(sample)
+        pseudo_text = self._coalesce_pseudo_text(pseudo_text)
         pseudo_text = self._truncate_pseudo_text(pseudo_text)
         do_corrupt = self.apply_corruption and (random.random() < self.corruption_prob)
         corrupted_pseudo = self.pseudo_text_corruptor(pseudo_text) if do_corrupt else pseudo_text
@@ -112,6 +114,41 @@ class R3Dataset(Dataset):
             if max_chars > 0:
                 result = [str(t)[:max_chars] for t in result]
         return result
+
+    @staticmethod
+    def _should_coalesce(entries: List[str]) -> bool:
+        if not entries or len(entries) < 40:
+            return False
+        word_counts = []
+        for entry in entries:
+            text = str(entry).strip()
+            if not text:
+                continue
+            word_counts.append(len(text.split()))
+        if not word_counts:
+            return False
+        avg_words = sum(word_counts) / len(word_counts)
+        short_ratio = sum(1 for c in word_counts if c <= 1) / len(word_counts)
+        return avg_words < 1.5 and short_ratio > 0.8
+
+    @classmethod
+    def _coalesce_pseudo_text(cls, entries: List[str], chunk_tokens: int = 12) -> List[str]:
+        if not cls._should_coalesce(entries):
+            return entries
+        tokens: List[str] = []
+        for entry in entries:
+            text = str(entry).strip()
+            if not text:
+                continue
+            tokens.extend(text.split())
+        if not tokens:
+            return entries
+        chunks: List[str] = []
+        for idx in range(0, len(tokens), chunk_tokens):
+            chunk = " ".join(tokens[idx : idx + chunk_tokens]).strip()
+            if chunk:
+                chunks.append(chunk)
+        return chunks
 
     @staticmethod
     def _inline_pseudo_text(sample: Dict) -> List[str]:
