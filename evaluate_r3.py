@@ -479,11 +479,56 @@ def tokenize_with_template(
     use_chat_template: bool,
     use_pseudo_text: bool = True,
 ):
+    def build_prompt(question: str, pseudo_entries: List[str]) -> str:
+        pseudo_block = "\n".join([p for p in pseudo_entries if p])
+        user_content = f"{pseudo_block}\nQuestion: {question}".strip() if pseudo_block else f"Question: {question}"
+        user_content = user_content + "\nPlease answer with the short answer only."
+        if use_chat_template:
+            messages = [{"role": "user", "content": user_content}]
+            return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        return f"{user_content}\nAnswer:"
+
+    def prompt_len(prompt: str) -> int:
+        return len(tokenizer(prompt, add_special_tokens=False)["input_ids"])
+
+    def trim_pseudo_to_budget(question: str, pseudo_entries: List[str]) -> List[str]:
+        if not pseudo_entries:
+            return []
+        min_answer_tokens = 2
+        max_prompt_len = max_length - min_answer_tokens
+        base_prompt = build_prompt(question, [])
+        base_len = prompt_len(base_prompt)
+        if base_len >= max_prompt_len:
+            return []
+        trimmed: List[str] = []
+        for entry in pseudo_entries:
+            if not entry:
+                continue
+            candidate = trimmed + [entry]
+            if prompt_len(build_prompt(question, candidate)) <= max_prompt_len:
+                trimmed = candidate
+                continue
+            remaining = max_prompt_len - prompt_len(build_prompt(question, trimmed))
+            if remaining <= 0:
+                break
+            entry_ids = tokenizer(entry, add_special_tokens=False)["input_ids"]
+            if len(entry_ids) > remaining:
+                entry_ids = entry_ids[:remaining]
+            entry_text = tokenizer.decode(entry_ids, skip_special_tokens=True).strip()
+            if entry_text:
+                trimmed.append(entry_text)
+            break
+        return trimmed
+
     questions = split["question"]
     labels_text = split.get("labels", [""] * len(questions))
-    pseudo_text = split.get("pseudo_text", [[] for _ in questions]) if use_pseudo_text else [[] for _ in questions]
+    raw_pseudo = split.get("pseudo_text", [[] for _ in questions]) if use_pseudo_text else [[] for _ in questions]
 
-    prompts = build_prompts(questions, pseudo_text, labels_text, tokenizer, use_chat_template)
+    prompt_pseudo = []
+    for q, pseudo in zip(questions, raw_pseudo):
+        prompt_pseudo.append(trim_pseudo_to_budget(q, pseudo) if use_pseudo_text else [])
+
+    prompts = build_prompts(questions, prompt_pseudo, labels_text, tokenizer, use_chat_template)
     prompt_texts = [p for p, _ in prompts]
     full_texts = [f for _, f in prompts]
 
@@ -509,8 +554,39 @@ def tokenize_with_template(
     prompt_lengths = prompt_tokens["attention_mask"].sum(dim=1)
     for idx, length in enumerate(prompt_lengths):
         labels[idx, : length.item()] = -100
+    if (labels != -100).sum(dim=1).eq(0).any():
+        fixed_pseudo = []
+        for idx, entries in enumerate(prompt_pseudo):
+            if (labels[idx] != -100).any():
+                fixed_pseudo.append(entries)
+            else:
+                fixed_pseudo.append([])
+        prompts = build_prompts(questions, fixed_pseudo, labels_text, tokenizer, use_chat_template)
+        prompt_texts = [p for p, _ in prompts]
+        full_texts = [f for _, f in prompts]
+        prompt_tokens = tokenizer(
+            prompt_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+        )
+        text_tokens = tokenizer(
+            full_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+        )
+        text_tokens = {k: v.to(device) for k, v in text_tokens.items()}
+        prompt_tokens = {k: v.to(device) for k, v in prompt_tokens.items()}
+        labels = text_tokens["input_ids"].clone()
+        labels[text_tokens["attention_mask"] == 0] = -100
+        prompt_lengths = prompt_tokens["attention_mask"].sum(dim=1)
+        for idx, length in enumerate(prompt_lengths):
+            labels[idx, : length.item()] = -100
     text_tokens["labels"] = labels
-    return text_tokens, pseudo_text
+    return text_tokens, raw_pseudo
 
 
 def main() -> None:
