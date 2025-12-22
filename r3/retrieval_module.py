@@ -24,6 +24,7 @@ class RetrievalModuleConfig:
     enable: bool = True
     cache_path: Optional[str] = None  # enable FAISS/vector store when set
     max_evidence_tokens: int = 32     # max tokens per evidence string when tokenizer is available
+    external_chunk_size: int = 4096   # CPU top-k chunk size for large external corpus
 
 
 @dataclass
@@ -149,15 +150,32 @@ class PseudoTextRetrievalModule(nn.Module):
         )  # (b, d)
         if self.external_embeddings is not None and self.external_texts is not None:
             # Use external corpus built from build_pseudo_text.py outputs
-            evidence_embeddings = self.external_embeddings.to(device=device).float()
+            evidence_embeddings = self.external_embeddings
             evidence_texts = [self.external_texts for _ in range(question_embeddings.size(0))]
         else:
             evidence_embeddings, evidence_texts = self._encode_evidence(pseudo_text, device)
             evidence_embeddings = evidence_embeddings.float()
 
-        if self.use_faiss and self.index is not None:
+        if (
+            self.external_embeddings is not None
+            and self.external_texts is not None
+            and evidence_embeddings.device.type == "cpu"
+            and device.type == "cuda"
+        ):
+            topk_embeddings, topk_texts, topk_scores = self._cpu_topk_external(
+                query.detach().to("cpu"),
+                evidence_embeddings,
+                evidence_texts,
+                top_k=self.config.top_k,
+                chunk_size=self.config.external_chunk_size,
+            )
+            # Move selected evidence to GPU for downstream reconstruction.
+            topk_embeddings = topk_embeddings.to(device=device).float()
+            topk_scores = topk_scores.to(device=device).float()
+        elif self.use_faiss and self.index is not None:
             topk_embeddings, topk_texts, topk_scores = self._faiss_search(evidence_embeddings, evidence_texts, query)
         else:
+            evidence_embeddings = evidence_embeddings.to(device=device).float()
             scores = self._score(
                 query,
                 evidence_embeddings,
@@ -170,6 +188,46 @@ class PseudoTextRetrievalModule(nn.Module):
             "embeddings": topk_embeddings,
             "scores": topk_scores,
         }
+
+    def _cpu_topk_external(
+        self,
+        query: torch.Tensor,
+        evidence_embeddings: torch.Tensor,
+        evidence_texts: List[List[str]],
+        top_k: int,
+        chunk_size: int,
+    ) -> Tuple[torch.Tensor, List[List[str]], torch.Tensor]:
+        # evidence_embeddings: (1, E, 1, D) on CPU
+        with torch.no_grad():
+            evidence = evidence_embeddings.squeeze(0).squeeze(1)  # (E, D)
+            if evidence.dim() != 2:
+                raise ValueError("External evidence embeddings must be 2D after squeeze.")
+            num_items = evidence.size(0)
+            batch = query.size(0)
+            top_k = min(top_k, num_items) if num_items > 0 else 0
+            top_scores = torch.full((batch, top_k), -1e9, dtype=torch.float32)
+            top_indices = torch.full((batch, top_k), -1, dtype=torch.long)
+            if num_items == 0 or top_k == 0:
+                empty_embeds = torch.zeros(batch, 0, 1, self.config.hidden_size, dtype=torch.float32)
+                empty_scores = torch.zeros(batch, 0, dtype=torch.float32)
+                return empty_embeds, [[] for _ in range(batch)], empty_scores
+            for start in range(0, num_items, chunk_size):
+                chunk = evidence[start : start + chunk_size].float()  # (C, D)
+                scores = torch.matmul(query.float(), chunk.t())  # (B, C)
+                c = scores.size(1)
+                idx_chunk = torch.arange(start, start + c).unsqueeze(0).expand(batch, c)
+                merged_scores = torch.cat([top_scores, scores], dim=1)
+                merged_indices = torch.cat([top_indices, idx_chunk], dim=1)
+                new_scores, new_pos = torch.topk(merged_scores, k=top_k, dim=1)
+                top_scores = new_scores
+                top_indices = merged_indices.gather(1, new_pos)
+            gathered = evidence[top_indices]  # (B, K, D)
+            top_embeddings = gathered.unsqueeze(2)  # (B, K, 1, D)
+            texts = []
+            flat_texts = evidence_texts[0] if evidence_texts else []
+            for b in range(batch):
+                texts.append([flat_texts[i] if 0 <= i < len(flat_texts) else "" for i in top_indices[b].tolist()])
+            return top_embeddings, texts, top_scores
 
     def _build_query(self, question_embeddings: torch.Tensor, txt_conf: torch.Tensor) -> torch.Tensor:
         weights = (1.0 - txt_conf).unsqueeze(-1)
@@ -353,8 +411,8 @@ class PseudoTextRetrievalModule(nn.Module):
             if vec is None:
                 token = torch.tensor([hash(text) % self._embedding_layer.num_embeddings], device=device)
                 vec = self._embedding_layer(token).mean(dim=0)
-            vectors.append(vec)
-        self.external_embeddings = torch.stack(vectors).unsqueeze(0).unsqueeze(2)  # (1, evidences, 1, dim)
+            vectors.append(vec.detach().cpu())
+        self.external_embeddings = torch.stack(vectors).unsqueeze(0).unsqueeze(2)  # CPU tensor
         self.external_texts = unique_texts
 
     def _select_topk(
