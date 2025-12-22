@@ -4,20 +4,17 @@ Training entrypoint for the R^3 multimodal reasoning system.
 from __future__ import annotations
 
 import argparse
-import copy
 import inspect
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import logging
-import json
 import random
 import os
 from PIL import Image
 import torch
 import torch.nn.functional as F
-import yaml
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 # Torch/Transformers compatibility:
 # - Some transformers builds call `torch.is_autocast_enabled(device_type)`, but older torch only supports
 #   `torch.is_autocast_enabled()` with no arguments.
@@ -51,6 +48,7 @@ from r3.r3_model import R3Model, R3ModelConfig
 from transformers import Trainer, TrainingArguments
 from transformers.trainer_callback import TrainerCallback
 from r3.retrieval_module import PseudoTextBuilder
+from r3.data_utils import R3Dataset, collate_fn, load_yaml, load_pseudo_corpus
 import torch.distributed as dist
 from accelerate import Accelerator
 
@@ -62,174 +60,6 @@ if "keep_torch_compile" not in inspect.signature(Accelerator.unwrap_model).param
         return _orig_unwrap(self, model, keep_fp32_wrapper=keep_fp32_wrapper)
 
     Accelerator.unwrap_model = _compat_unwrap
-
-class R3Dataset(Dataset):
-    def __init__(
-        self,
-        base_dataset: BasePMCDataset,
-        vision_tokens: int,
-        hidden_size: int,
-        apply_corruption: bool = True,
-        pseudo_builder: Optional[PseudoTextBuilder] = None,
-        pseudo_text_drop_prob: float = 0.3,
-        pseudo_corpus: Optional[Dict[str, List[str]]] = None,
-        image_corruptor: Optional[ImageCorruptor] = None,
-        pseudo_text_corruptor: Optional[PseudoTextCorruptor] = None,
-        pseudo_text_max_items: Optional[int] = None,
-        pseudo_text_max_chars: Optional[int] = None,
-        corruption_prob: float = 1.0,
-    ) -> None:
-        self.base = base_dataset
-        self.vision_tokens = vision_tokens
-        self.hidden_size = hidden_size
-        self.apply_corruption = apply_corruption
-        self.pseudo_builder = pseudo_builder or PseudoTextBuilder()
-        self.pseudo_corpus = pseudo_corpus or {}
-        self.image_corruptor = image_corruptor or ImageCorruptor(ImageCorruptionConfig())
-        self.pseudo_text_max_items = pseudo_text_max_items
-        self.pseudo_text_max_chars = pseudo_text_max_chars
-        self.corruption_prob = float(corruption_prob)
-        if pseudo_text_corruptor:
-            self.pseudo_text_corruptor = pseudo_text_corruptor
-        else:
-            self.pseudo_text_corruptor = PseudoTextCorruptor(
-                PseudoTextCorruptionConfig(drop_prob=pseudo_text_drop_prob)
-            )
-
-    def __len__(self) -> int:
-        return len(self.base)
-
-    def __getitem__(self, idx: int) -> Dict:
-        sample = copy.deepcopy(self.base[idx])
-        answer = sample.get("answer")
-        if answer is None:
-            answer = "UNKNOWN"
-        elif isinstance(answer, (list, tuple)):
-            answer = answer[0] if answer else "UNKNOWN"
-        elif not isinstance(answer, str):
-            answer = str(answer)
-        pseudo_text = self._inline_pseudo_text(sample)
-        # Prefer offline pseudo-text corpus if provided
-        if sample.get("id") in self.pseudo_corpus:
-            pseudo_text = self.pseudo_corpus[sample["id"]]
-        pseudo_text = self._truncate_pseudo_text(pseudo_text)
-        if not pseudo_text and self.pseudo_builder:
-            pseudo_text = self.pseudo_builder.build(sample)
-        pseudo_text = self._truncate_pseudo_text(pseudo_text)
-        do_corrupt = self.apply_corruption and (random.random() < self.corruption_prob)
-        corrupted_pseudo = self.pseudo_text_corruptor(pseudo_text) if do_corrupt else pseudo_text
-        image = self._load_image(sample.get("image_path"))
-        clean_image = image.copy() if image else None
-        corrupted_image = self.image_corruptor(image) if (image and do_corrupt) else clean_image
-        clean = {
-            "question": sample["question"],
-            "labels": answer,
-            "pseudo_text": pseudo_text,
-            "image_path": sample.get("image_path"),
-            "image": clean_image,
-            "vision_tokens": self.vision_tokens,
-            "hidden_size": self.hidden_size,
-        }
-        corrupted_branch = {
-            "question": sample["question"],  # 问题保持不变，仅模拟伪文本/视觉缺失
-            "labels": answer,
-            "pseudo_text": corrupted_pseudo,
-            "image_path": sample.get("image_path"),
-            "image": corrupted_image,
-            "vision_tokens": self.vision_tokens,
-            "hidden_size": self.hidden_size,
-        }
-        return {"id": sample["id"], "clean": clean, "corrupted": corrupted_branch}
-
-    def _truncate_pseudo_text(self, entries: List[str]) -> List[str]:
-        if not entries:
-            return entries
-        result = entries
-        if self.pseudo_text_max_items is not None:
-            result = result[: max(0, int(self.pseudo_text_max_items))]
-        if self.pseudo_text_max_chars is not None:
-            max_chars = int(self.pseudo_text_max_chars)
-            if max_chars > 0:
-                result = [str(t)[:max_chars] for t in result]
-        return result
-
-    @staticmethod
-    def _inline_pseudo_text(sample: Dict) -> List[str]:
-        entries: List[str] = []
-        extra = sample.get("extra", {}) or {}
-        for ctx in extra.get("context_evidence", []):
-            if ctx:
-                entries.append(str(ctx))
-        for token in extra.get("ocr_tokens", []):
-            if isinstance(token, dict):
-                span = token.get("text", "")
-            else:
-                span = str(token)
-            if span:
-                entries.append(span)
-        for caption in extra.get("captions", []):
-            if caption:
-                entries.append(caption)
-        return entries
-
-    @staticmethod
-    def _load_image(path: Optional[str]) -> Optional[Image.Image]:
-        if not path:
-            return None
-        project_root = Path(__file__).resolve().parent
-        candidates = []
-        try:
-            candidates.append(Path(path))
-        except Exception:
-            return None
-        dup_fix = {
-            "documents/documents": "documents",
-            "charts/charts": "charts",
-            "images/images": "images",
-            "pics/pics": "pics",
-        }
-        for dup, fix in dup_fix.items():
-            if dup in path:
-                try:
-                    candidates.append(Path(path.replace(dup, fix, 1)))
-                except Exception:
-                    pass
-        expanded: List[Path] = []
-        for cand in candidates:
-            expanded.append(cand)
-            if not cand.is_absolute():
-                expanded.append(project_root / cand)
-        for cand in expanded:
-            if cand.exists():
-                try:
-                    return Image.open(cand).convert("RGB")
-                except Exception:
-                    continue
-        return None
-
-
-def collate_fn(batch: List[Dict]) -> Dict:
-    ids = [item["id"] for item in batch]
-    clean = {
-        "question": [item["clean"]["question"] for item in batch],
-        "labels": [item["clean"]["labels"] for item in batch],
-        "pseudo_text": [item["clean"]["pseudo_text"] for item in batch],
-        "image_path": [item["clean"].get("image_path") for item in batch],
-        "images": [item["clean"].get("image") for item in batch],
-        "vision_tokens": batch[0]["clean"].get("vision_tokens"),
-        "hidden_size": batch[0]["clean"].get("hidden_size"),
-    }
-    corrupted = {
-        "question": [item["corrupted"]["question"] for item in batch],
-        "labels": [item["corrupted"]["labels"] for item in batch],
-        "pseudo_text": [item["corrupted"]["pseudo_text"] for item in batch],
-        "image_path": [item["corrupted"].get("image_path") for item in batch],
-        "images": [item["corrupted"].get("image") for item in batch],
-        "vision_tokens": batch[0]["corrupted"].get("vision_tokens"),
-        "hidden_size": batch[0]["corrupted"].get("hidden_size"),
-    }
-    return {"ids": ids, "clean": clean, "corrupted": corrupted}
-
 
 class MultiTaskDataset(Dataset):
     """
@@ -307,6 +137,14 @@ class LossLogger(TrainerCallback):
             msg.append(f"task_loss={float(logs['task_loss']):.4f}")
         if "consistency_loss" in logs:
             msg.append(f"consistency_loss={float(logs['consistency_loss']):.4f}")
+        if "lambda_consistency" in logs:
+            msg.append(f"lambda_c={float(logs['lambda_consistency']):.4f}")
+        if "labels_valid" in logs:
+            msg.append(f"labels_valid={int(float(logs['labels_valid']))}")
+        if "prompt_len" in logs:
+            msg.append(f"prompt_len={float(logs['prompt_len']):.1f}")
+        if "pseudo_avg_items" in logs:
+            msg.append(f"pseudo_avg_items={float(logs['pseudo_avg_items']):.2f}")
         if "learning_rate" in logs:
             msg.append(f"lr={logs['learning_rate']:.6f}")
         if "epoch" in logs:
@@ -332,6 +170,15 @@ class R3Trainer(Trainer):
         self.lr_lora_mult = lr_lora_mult
         self.lr_r3_mult = lr_r3_mult
         self.use_chat_template = use_chat_template
+        self._last_metrics: Dict[str, float] = {}
+
+    def log(self, logs: Dict[str, float]) -> None:
+        # Inject latest per-step metrics captured in compute_loss.
+        if getattr(self, "_last_metrics", None):
+            for key, val in self._last_metrics.items():
+                if key not in logs:
+                    logs[key] = val
+        super().log(logs)
 
     def create_optimizer(self):
         """
@@ -494,6 +341,31 @@ class R3Trainer(Trainer):
         loss_task = loss_task.float()
         loss_consistency = loss_consistency.float()
         total_loss = (loss_task + lambda_c * loss_consistency).float()
+        # Track extra metrics for logging.
+        try:
+            pseudo_count = (
+                sum(len(p) for p in corrupted_pseudo) / max(1, len(corrupted_pseudo))
+                if isinstance(corrupted_pseudo, list)
+                else 0.0
+            )
+        except Exception:
+            pseudo_count = 0.0
+        valid_labels = int((corrupted_tokens["labels"] != -100).sum().item())
+        prompt_len = 0.0
+        try:
+            prompt_lengths = corrupted_tokens.get("prompt_length")
+            if torch.is_tensor(prompt_lengths) and prompt_lengths.numel() > 0:
+                prompt_len = float(prompt_lengths.float().mean().item())
+        except Exception:
+            prompt_len = 0.0
+        self._last_metrics = {
+            "task_loss": float(loss_task.detach().float().cpu()),
+            "consistency_loss": float(loss_consistency.detach().float().cpu()),
+            "lambda_consistency": float(lambda_c),
+            "labels_valid": float(valid_labels),
+            "prompt_len": float(prompt_len),
+            "pseudo_avg_items": float(pseudo_count),
+        }
         # Trainer expects loss on args.device (cuda:0 for model-parallel). Move explicitly to avoid device mismatch.
         try:
             target_device = getattr(self.args, "device", None)
@@ -671,6 +543,7 @@ class R3Trainer(Trainer):
         labels = text_tokens["input_ids"].clone()
         labels[text_tokens["attention_mask"] == 0] = -100
         prompt_lengths = prompt_tokens["attention_mask"].sum(dim=1)
+        text_tokens["prompt_length"] = prompt_lengths.to(device)
         for idx, length in enumerate(prompt_lengths):
             labels[idx, : length.item()] = -100
         # If any sample has all labels masked (prompt truncated out the answer),
@@ -705,6 +578,7 @@ class R3Trainer(Trainer):
             labels = text_tokens["input_ids"].clone()
             labels[text_tokens["attention_mask"] == 0] = -100
             prompt_lengths = prompt_tokens["attention_mask"].sum(dim=1)
+            text_tokens["prompt_length"] = prompt_lengths.to(device)
             for idx, length in enumerate(prompt_lengths):
                 labels[idx, : length.item()] = -100
         text_tokens["labels"] = labels
@@ -755,6 +629,24 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="If set, run a 1-sample quick eval every N optimizer steps on rank0.",
     )
+    parser.add_argument(
+        "--eval_every",
+        type=int,
+        default=None,
+        help="If set, run a periodic score eval every N steps (rank0 only). Defaults to save_steps when eval_samples>0.",
+    )
+    parser.add_argument(
+        "--eval_samples",
+        type=int,
+        default=0,
+        help="Number of samples for periodic score eval (0=disabled).",
+    )
+    parser.add_argument(
+        "--eval_max_new_tokens",
+        type=int,
+        default=32,
+        help="Max new tokens for periodic score eval generation.",
+    )
     parser.add_argument("--log_interval", type=int, default=None, help="Override training.log_interval for logging_steps.")
     parser.add_argument(
         "--resume_from_checkpoint",
@@ -775,31 +667,6 @@ def parse_args() -> argparse.Namespace:
         help="Optional checkpoint save interval (overrides TrainingArguments default).",
     )
     return parser.parse_args()
-
-
-def load_yaml(path: Path) -> Dict:
-    with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def load_pseudo_corpus(path: Optional[str]) -> Dict[str, List[str]]:
-    if not path:
-        return {}
-    corpus_path = Path(path)
-    if not corpus_path.exists():
-        raise FileNotFoundError(f"Pseudo-text corpus not found: {path}")
-    records: Dict[str, List[str]] = {}
-    with corpus_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            doc_id = obj.get("doc_id")
-            pseudo = obj.get("pseudo_text", [])
-            if doc_id:
-                records[str(doc_id)] = pseudo
-    return records
 
 
 def main() -> None:
@@ -890,6 +757,23 @@ def main() -> None:
     else:
         train_dataset = build_single_dataset(dataset_section)
         logging.info("Single dataset initialized.")
+
+    eval_dataset = None
+    if args.eval_samples and int(args.eval_samples) > 0:
+        eval_split = dataset_section.get("eval_split", "val")
+        if multi_cfg:
+            eval_datasets: List[R3Dataset] = []
+            eval_weights: List[float] = []
+            for entry in multi_cfg:
+                eval_entry = dict(entry)
+                eval_entry["split"] = eval_split
+                eval_datasets.append(build_single_dataset(eval_entry))
+                eval_weights.append(eval_entry.get("weight", 1.0))
+            eval_dataset = MultiTaskDataset(eval_datasets, weights=eval_weights)
+        else:
+            eval_entry = dict(dataset_section)
+            eval_entry["split"] = eval_split
+            eval_dataset = build_single_dataset(eval_entry)
 
     model_section = cfg.get("model", {})
     training_section = cfg.get("training", {})
@@ -1040,6 +924,16 @@ def main() -> None:
             self._last_step: int = -1
             self._last_id: Optional[str] = None
 
+        @staticmethod
+        def _summarize_entries(entries: List[str], max_items: int = 5, max_chars: int = 160) -> List[str]:
+            summary: List[str] = []
+            for entry in entries[:max_items]:
+                text = str(entry).replace("\n", " ").strip()
+                if len(text) > max_chars:
+                    text = text[:max_chars] + "..."
+                summary.append(text)
+            return summary
+
         def _sample(self) -> Dict:
             # MultiTaskDataset ignores idx and samples randomly; this works for both cases.
             if len(self.dataset) <= 0:
@@ -1083,6 +977,8 @@ def main() -> None:
                 tgt = branch.get("labels", "")
                 img = branch.get("image")
                 img_path = branch.get("image_path")
+                pseudo_entries = branch.get("pseudo_text", []) or []
+                pseudo_summary = self._summarize_entries(pseudo_entries)
                 if img is None and img_path:
                     img = R3Dataset._load_image(img_path)
                 messages = [
@@ -1119,8 +1015,111 @@ def main() -> None:
                 self.logger.info(
                     f"[quick_eval step={state.global_step}] idx={idx} id={sid} | q={q} | pred={pred} | tgt={tgt} | img={img_path}"
                 )
+                # Log retrieval inputs/outputs for quick inspection when enabled.
+                try:
+                    if bool(getattr(base_model.config, "enable_retrieval", False)) and hasattr(base_model, "retrieval"):
+                        # Build a short question-only prompt for retrieval query embeddings.
+                        if hasattr(self.tokenizer, "apply_chat_template"):
+                            q_prompt = self.tokenizer.apply_chat_template(
+                                [{"role": "user", "content": f"Question: {q}"}],
+                                tokenize=False,
+                                add_generation_prompt=True,
+                            )
+                        else:
+                            q_prompt = f"Question: {q}\nAnswer:"
+                        max_q_len = min(int(getattr(base_model.config, "max_seq_length", 1024)), 512)
+                        q_tokens = self.tokenizer(
+                            q_prompt,
+                            return_tensors="pt",
+                            truncation=True,
+                            max_length=max_q_len,
+                        )["input_ids"].to(dev)
+                        q_embeds = base_model.base_vlm.model.get_input_embeddings()(q_tokens)
+                        txt_conf = torch.zeros(q_embeds.size()[:2], device=dev)
+                        img_conf = torch.zeros((q_embeds.size(0), 1), device=dev)
+                        retrieval = base_model.retrieval(q_embeds, [pseudo_entries], img_conf, txt_conf)
+                        top_texts = retrieval.get("texts", [[]])[0]
+                        top_scores = retrieval.get("scores", None)
+                        if torch.is_tensor(top_scores):
+                            scores = top_scores[0].detach().cpu().tolist()
+                            retrieved = [
+                                f"{s:.3f}:{t}" for s, t in zip(scores, self._summarize_entries(top_texts))
+                            ]
+                        else:
+                            retrieved = self._summarize_entries(top_texts)
+                        self.logger.info(f"[quick_eval step={state.global_step}] pseudo_text={pseudo_summary}")
+                        self.logger.info(f"[quick_eval step={state.global_step}] retrieved={retrieved}")
+                    else:
+                        self.logger.info(f"[quick_eval step={state.global_step}] pseudo_text={pseudo_summary}")
+                except Exception as exc:
+                    self.logger.warning(f"[quick_eval] retrieval inspect failed: {exc}")
             except Exception as e:
                 self.logger.warning(f"[quick_eval] failed: {e}")
+            finally:
+                if model_was_training:
+                    model.train()
+
+    class PeriodicEvalCallback(TrainerCallback):
+        def __init__(
+            self,
+            dataset: Dataset,
+            every: int,
+            samples: int,
+            tokenizer,
+            processor,
+            logger,
+            use_chat_template: bool,
+            max_new_tokens: int = 32,
+        ):
+            self.dataset = dataset
+            self.every = every
+            self.samples = samples
+            self.tokenizer = tokenizer
+            self.processor = processor
+            self.logger = logger
+            self.use_chat_template = use_chat_template
+            self.max_new_tokens = max_new_tokens
+            self._last_step: int = -1
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if self.samples <= 0 or self.every <= 0:
+                return
+            if state.global_step == 0 or state.global_step % self.every != 0:
+                return
+            if state.global_step == self._last_step:
+                return
+            self._last_step = int(state.global_step)
+            local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+            if local_rank not in (-1, 0):
+                return
+            model = kwargs.get("model", None)
+            if model is None:
+                return
+            model_was_training = model.training
+            model.eval()
+            try:
+                import importlib
+                eval_mod = importlib.import_module("evaluate_r3")
+                base_model = model.module if hasattr(model, "module") else model
+                metrics = eval_mod.score_model_on_dataset(
+                    base_model,
+                    self.processor,
+                    self.tokenizer,
+                    self.dataset,
+                    samples=int(self.samples),
+                    use_chat_template=self.use_chat_template,
+                    max_new_tokens=int(self.max_new_tokens),
+                )
+                self.logger.info(
+                    "[periodic_eval step=%d] samples=%d acc=%.4f anls=%.4f avg_prompt_len=%.1f",
+                    state.global_step,
+                    int(metrics.get("samples", 0)),
+                    float(metrics.get("accuracy", 0.0)),
+                    float(metrics.get("anls", 0.0)),
+                    float(metrics.get("avg_prompt_len", 0.0)),
+                )
+            except Exception as e:
+                self.logger.warning(f"[periodic_eval] failed: {e}")
             finally:
                 if model_was_training:
                     model.train()
@@ -1135,6 +1134,23 @@ def main() -> None:
                 tokenizer=model.base_vlm.tokenizer,
                 processor=model.base_vlm.processor,
                 logger=logging.getLogger(),
+            )
+        )
+    # build periodic score eval callback
+    eval_every = args.eval_every
+    if eval_every is None and args.eval_samples and args.save_steps is not None:
+        eval_every = args.save_steps
+    if eval_dataset is not None and eval_every is not None and eval_every > 0:
+        callbacks.append(
+            PeriodicEvalCallback(
+                dataset=eval_dataset,
+                every=int(eval_every),
+                samples=int(args.eval_samples),
+                tokenizer=model.base_vlm.tokenizer,
+                processor=model.base_vlm.processor,
+                logger=logging.getLogger(),
+                use_chat_template=training_section.get("use_chat_template", False),
+                max_new_tokens=int(args.eval_max_new_tokens),
             )
         )
 

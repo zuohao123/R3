@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
+from PIL import Image
 # Torch/Transformers compatibility:
 # - Some transformers builds call `torch.is_autocast_enabled(device_type)`, but older torch only supports
 #   `torch.is_autocast_enabled()` with no arguments.
@@ -46,7 +48,7 @@ from data_pipeline.corruptions import (
     PseudoTextCorruptor,
 )
 from r3.r3_model import R3Model, R3ModelConfig
-from train_r3 import R3Dataset, collate_fn, load_yaml, load_pseudo_corpus
+from r3.data_utils import R3Dataset, collate_fn, load_yaml, load_pseudo_corpus
 
 
 def parse_args() -> argparse.Namespace:
@@ -276,6 +278,133 @@ def best_span_match(pred: str, target: str) -> str:
                 best_score = score
                 best = span
     return best
+
+
+def score_model_on_dataset(
+    model,
+    processor,
+    tokenizer,
+    dataset,
+    samples: int = 300,
+    use_chat_template: bool = False,
+    max_new_tokens: int = 32,
+) -> Dict[str, float]:
+    """
+    Lightweight evaluation for training-time periodic checks.
+    Uses the in-memory model (no checkpoint reload).
+    """
+    model.eval()
+    try:
+        dev = model.base_vlm.model.get_input_embeddings().weight.device
+    except Exception:
+        dev = next(model.parameters()).device
+    use_retrieval = bool(getattr(model.config, "enable_retrieval", False))
+    use_corruption = bool(getattr(model.config, "enable_corruption", False))
+    max_seq_length = int(getattr(model.config, "max_seq_length", 1024))
+
+    total = 0
+    correct = 0
+    anls_sum = 0.0
+    prompt_len_sum = 0
+    for _ in range(min(samples, len(dataset))):
+        item = dataset[random.randint(0, len(dataset) - 1)]
+        clean = item["clean"]
+        corrupted = item["corrupted"]
+        branch = corrupted if use_corruption else clean
+        q = branch["question"]
+        tgt = branch.get("labels", "")
+        img = branch.get("image")
+        img_path = branch.get("image_path")
+        pseudo_entries = branch.get("pseudo_text", []) or []
+        if img is None and img_path:
+            img = R3Dataset._load_image(img_path)
+
+        evidence_entries = []
+        if use_retrieval and hasattr(model, "retrieval"):
+            if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+                q_prompt = tokenizer.apply_chat_template(
+                    [{"role": "user", "content": f"Question: {q}"}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            else:
+                q_prompt = f"Question: {q}\nAnswer:"
+            q_tokens = tokenizer(
+                q_prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=min(512, max_seq_length),
+            )["input_ids"].to(dev)
+            q_embeds = model.base_vlm.model.get_input_embeddings()(q_tokens)
+            txt_conf = torch.zeros(q_embeds.size()[:2], device=dev)
+            img_conf = torch.zeros((q_embeds.size(0), 1), device=dev)
+            retrieval = model.retrieval(q_embeds, [pseudo_entries], img_conf, txt_conf)
+            evidence_entries = retrieval.get("texts", [[]])[0]
+
+        pseudo_block = "\n".join([p for p in evidence_entries if p]) if evidence_entries else ""
+        user_content = f"{pseudo_block}\nQuestion: {q}".strip() if pseudo_block else f"Question: {q}"
+        user_content = user_content + "\nPlease answer with the short answer only."
+        if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+            prompt = tokenizer.apply_chat_template(
+                [{"role": "user", "content": user_content}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        else:
+            prompt = f"{user_content}\nAnswer:"
+        inputs = processor(text=[prompt], images=[img], return_tensors="pt").to(dev)
+        prompt_len_sum += int(inputs["input_ids"].shape[1])
+        input_len = inputs["input_ids"].shape[1]
+        with torch.no_grad():
+            gen = model.base_vlm.model.generate(  # type: ignore
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                num_beams=1,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        gen_ids = gen[0][input_len:]
+        pred_raw = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+        pred = best_span_match(pred_raw, tgt)
+        total += 1
+        if is_correct(pred, tgt):
+            correct += 1
+        anls_sum += anls(pred, tgt)
+    accuracy = correct / max(1, total)
+    anls_score = anls_sum / max(1, total)
+    avg_prompt_len = prompt_len_sum / max(1, total)
+    return {
+        "samples": float(total),
+        "accuracy": float(accuracy),
+        "anls": float(anls_score),
+        "avg_prompt_len": float(avg_prompt_len),
+    }
+
+
+def get_vision_embeddings(model, split: Dict, device: torch.device) -> torch.Tensor:
+    """
+    Mirror train-time vision embedding extraction.
+    """
+    images = split.get("images")
+    if images:
+        processed = [img if img is not None else Image.new("RGB", (224, 224), color="black") for img in images]
+        return model.base_vlm.encode_images(
+            images=processed,
+            vision_tokens=split.get("vision_tokens", 16),
+            hidden_size=split.get("hidden_size", model.config.hidden_size),
+            device=device,
+        )
+    image_paths = split.get("image_path")
+    if image_paths:
+        processed = [p if p else torch.zeros(3, 224, 224) for p in image_paths]
+        return model.base_vlm.encode_images(
+            images=processed,
+            vision_tokens=split.get("vision_tokens", 16),
+            hidden_size=split.get("hidden_size", model.config.hidden_size),
+            device=device,
+        )
+    raise ValueError("No vision input found for this batch.")
 
 
 def build_prompts(questions: List[str], pseudo_batch: List[List[str]], labels: List[str], tokenizer, use_chat_template: bool) -> List[str]:
@@ -778,7 +907,6 @@ def main() -> None:
             corrupted_split = batch["corrupted"]
             tokenizer = model.base_vlm.tokenizer
             max_len = getattr(model.config, "max_seq_length", 2048)
-            from train_r3 import R3Trainer  # reuse vision utilities
 
             use_pseudo_text = bool(getattr(model.config, "enable_retrieval", False)) and not args.disable_retrieval
             corrupted_tokens, corrupted_pseudo = tokenize_with_template(
@@ -789,7 +917,7 @@ def main() -> None:
                 use_chat_template=use_chat_template,
                 use_pseudo_text=use_pseudo_text,
             )
-            corrupted_vision = R3Trainer._get_vision_embeddings(model, corrupted_split, device)
+            corrupted_vision = get_vision_embeddings(model, corrupted_split, device)
             student_out = model(
                 input_ids=corrupted_tokens["input_ids"],
                 attention_mask=corrupted_tokens["attention_mask"],
