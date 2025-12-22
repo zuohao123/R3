@@ -243,6 +243,17 @@ def normalize_basic(text: str) -> str:
     return t
 
 
+def summarize_entries(entries: List[str], max_items: int = 5, max_chars: int = 160) -> List[str]:
+    summary: List[str] = []
+    for entry in entries[:max_items]:
+        text = str(entry).replace("\n", " ").strip()
+        if len(text) > max_chars:
+            text = text[:max_chars] + "..."
+        if text:
+            summary.append(text)
+    return summary
+
+
 def _to_number(text: str) -> Optional[float]:
     """
     Try to parse a float from normalized text by stripping $, commas, and spaces.
@@ -799,9 +810,13 @@ def main() -> None:
                         msg += f" anls={interim_anls:.4f}"
                     print(msg)
                     if args.log_samples:
+                        pseudo_entries = split_data.get("pseudo_text", [[]])[0] if isinstance(split_data.get("pseudo_text"), list) else []
+                        pseudo_summary = summarize_entries(pseudo_entries)
                         print(
                             f"  id={batch['ids'][0]} | img={img_path} | pred_raw={pred_text} | pred_scored={pred_for_score} | target={target}"
                         )
+                        print(f"  pseudo_text={pseudo_summary}")
+                        print("  retrieved=[]")
                 continue
             if args.native_eval:
                 # Expect batch_size=1; use corrupted split when apply_corruption is enabled
@@ -930,10 +945,16 @@ def main() -> None:
                     if args.log_samples:
                         k = min(args.log_samples, len(predictions))
                         for j in range(k):
+                            pseudo_entries = []
+                            if isinstance(split_data.get("pseudo_text"), list) and j < len(split_data["pseudo_text"]):
+                                pseudo_entries = split_data["pseudo_text"][j] or []
+                            pseudo_summary = summarize_entries(pseudo_entries)
                             print(
                                 f"  id={batch['ids'][j]} | img={batch['clean']['image_path'][j] if isinstance(batch['clean'].get('image_path'), list) else None} "
                                 f"| pred_raw={raw_preds[j]} | pred_scored={predictions[j]} | target={targets[j]}"
                             )
+                            print(f"  pseudo_text={pseudo_summary}")
+                            print("  retrieved=[]")
                 continue
 
             try:
@@ -1011,6 +1032,11 @@ def main() -> None:
             )
             raw_predictions = decode_predictions(logits, aligned_labels, tokenizer)
             predictions = [first_sentence(clean_generation_output(p)) for p in raw_predictions]
+            retrieval_texts = None
+            retrieval_scores = None
+            if isinstance(retrieval, dict):
+                retrieval_texts = retrieval.get("texts")
+                retrieval_scores = retrieval.get("scores")
             scored_preds = [best_span_match(p, t) for p, t in zip(predictions, corrupted_split["labels"])]
             targets = corrupted_split["labels"]
             for j, (sample_id, pred_raw, scored_pred, target) in enumerate(
@@ -1054,6 +1080,26 @@ def main() -> None:
                         print(
                             f"  id={batch['ids'][j]} | img={img_path} | pred_raw={predictions[j]} | pred_scored={scored_preds[j]} | target={targets[j]}"
                         )
+                        pseudo_entries = []
+                        if isinstance(corrupted_split.get("pseudo_text"), list) and j < len(corrupted_split["pseudo_text"]):
+                            pseudo_entries = corrupted_split["pseudo_text"][j] or []
+                        pseudo_summary = summarize_entries(pseudo_entries)
+                        retrieved = []
+                        if isinstance(retrieval_texts, list) and j < len(retrieval_texts):
+                            texts = retrieval_texts[j]
+                            scores = None
+                            if torch.is_tensor(retrieval_scores):
+                                scores = retrieval_scores[j].detach().cpu().tolist()
+                            for idx_r, text in enumerate(texts):
+                                entry = str(text).replace("\n", " ").strip()
+                                if not entry:
+                                    continue
+                                if scores is not None and idx_r < len(scores):
+                                    entry = f"{scores[idx_r]:.3f}:{entry}"
+                                retrieved.append(entry)
+                        retrieved = summarize_entries(retrieved)
+                        print(f"  pseudo_text={pseudo_summary}")
+                        print(f"  retrieved={retrieved}")
 
     avg_loss = total_loss / max(1, total_batches)
     accuracy = correct / max(1, total)
