@@ -25,6 +25,7 @@ model:
   lora_rank: 8                # 降低 LoRA 尺寸以进一步节省显存
   lora_alpha: 16
   hidden_size: 4096
+  max_seq_length: 1024     # Stage1 用短序列；Stage2/3 在各自配置中加长
   bf16: false                 # V100 不支持 bf16
   dtype: fp16                 # 与基座/评测一致：fp16 权重，避免 DDP 单卡 OOM
   vision_tokens: 64           # 对齐官方长视觉序列

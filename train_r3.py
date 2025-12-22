@@ -589,6 +589,49 @@ class R3Trainer(Trainer):
         use_chat_template: bool = False,
         use_pseudo_text: bool = True,
     ):
+        def build_prompt(question: str, pseudo_entries: List[str]) -> str:
+            pseudo_block = R3Trainer._format_pseudo_text(pseudo_entries)
+            user_content = f"{pseudo_block}\nQuestion: {question}".strip() if pseudo_block else f"Question: {question}"
+            user_content = user_content + "\nPlease answer with the short answer only."
+            if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+                messages = [{"role": "user", "content": user_content}]
+                return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            return f"{user_content}\nAnswer:"
+
+        def prompt_len(prompt: str) -> int:
+            return len(tokenizer(prompt, add_special_tokens=False)["input_ids"])
+
+        def trim_pseudo_to_budget(question: str, pseudo_entries: List[str]) -> List[str]:
+            if not pseudo_entries:
+                return []
+            # Keep some room for the short answer; allow at least 2 tokens.
+            min_answer_tokens = 2
+            max_prompt_len = max_length - min_answer_tokens
+            base_prompt = build_prompt(question, [])
+            base_len = prompt_len(base_prompt)
+            if base_len >= max_prompt_len:
+                return []
+            trimmed: List[str] = []
+            for entry in pseudo_entries:
+                if not entry:
+                    continue
+                candidate = trimmed + [entry]
+                if prompt_len(build_prompt(question, candidate)) <= max_prompt_len:
+                    trimmed = candidate
+                    continue
+                # If the next entry overflows, truncate it to fit the remaining budget.
+                remaining = max_prompt_len - prompt_len(build_prompt(question, trimmed))
+                if remaining <= 0:
+                    break
+                entry_ids = tokenizer(entry, add_special_tokens=False)["input_ids"]
+                if len(entry_ids) > remaining:
+                    entry_ids = entry_ids[:remaining]
+                entry_text = tokenizer.decode(entry_ids, skip_special_tokens=True).strip()
+                if entry_text:
+                    trimmed.append(entry_text)
+                break
+            return trimmed
+
         questions = split["question"]
         labels_text = split.get("labels", [""] * len(questions))
         # 防止空答案导致全 -100：遇到空字符串时替换为占位符。
@@ -599,19 +642,14 @@ class R3Trainer(Trainer):
             else:
                 sane_labels.append(lbl)
         labels_text = sane_labels
-        pseudo_text = split.get("pseudo_text", [[] for _ in questions]) if use_pseudo_text else [[] for _ in questions]
+        raw_pseudo = split.get("pseudo_text", [[] for _ in questions]) if use_pseudo_text else [[] for _ in questions]
+        prompt_pseudo = []
+        for q, pseudo in zip(questions, raw_pseudo):
+            prompt_pseudo.append(trim_pseudo_to_budget(q, pseudo) if use_pseudo_text else [])
 
         prompts = []
-        for q, pseudo in zip(questions, pseudo_text):
-            pseudo_block = R3Trainer._format_pseudo_text(pseudo)
-            user_content = f"{pseudo_block}\nQuestion: {q}".strip() if pseudo_block else f"Question: {q}"
-            user_content = user_content + "\nPlease answer with the short answer only."
-            if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
-                messages = [{"role": "user", "content": user_content}]
-                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            else:
-                prompt = f"{user_content}\nAnswer:"
-            prompts.append(prompt)
+        for q, pseudo in zip(questions, prompt_pseudo):
+            prompts.append(build_prompt(q, pseudo))
         prompt_tokens = tokenizer(
             prompts,
             return_tensors="pt",
@@ -639,22 +677,14 @@ class R3Trainer(Trainer):
         # rebuild prompts without pseudo-text for those samples to recover supervision.
         if (labels != -100).sum(dim=1).eq(0).any():
             fixed_pseudo = []
-            for idx, entries in enumerate(pseudo_text):
+            for idx, entries in enumerate(prompt_pseudo):
                 if (labels[idx] != -100).any():
                     fixed_pseudo.append(entries)
                 else:
                     fixed_pseudo.append([])  # drop pseudo-text to shorten prompt
             prompts = []
             for q, pseudo in zip(questions, fixed_pseudo):
-                pseudo_block = R3Trainer._format_pseudo_text(pseudo)
-                user_content = f"{pseudo_block}\nQuestion: {q}".strip() if pseudo_block else f"Question: {q}"
-                user_content = user_content + "\nPlease answer with the short answer only."
-                if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
-                    messages = [{"role": "user", "content": user_content}]
-                    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                else:
-                    prompt = f"{user_content}\nAnswer:"
-                prompts.append(prompt)
+                prompts.append(build_prompt(q, pseudo))
             prompt_tokens = tokenizer(
                 prompts,
                 return_tensors="pt",
@@ -678,7 +708,8 @@ class R3Trainer(Trainer):
             for idx, length in enumerate(prompt_lengths):
                 labels[idx, : length.item()] = -100
         text_tokens["labels"] = labels
-        return text_tokens, pseudo_text
+        # Return the full pseudo text for retrieval (do not over-truncate evidence).
+        return text_tokens, raw_pseudo
 
     @staticmethod
     def _format_pseudo_text(pseudo: List[str]) -> str:
