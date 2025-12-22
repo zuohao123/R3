@@ -155,6 +155,41 @@ def align_labels_for_r3(
     return labels
 
 
+def causal_ce(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    prefix_tokens: int = 0,
+    imputation_tokens: int = 0,
+    vision_tokens: int = 0,
+) -> torch.Tensor:
+    """
+    Manual causal LM loss with label shift, ignoring -100.
+    Mirrors train_r3.R3Trainer._causal_ce.
+    """
+    labels = labels.to(logits.device)
+    if prefix_tokens > 0:
+        labels = F.pad(labels, (prefix_tokens, 0), value=-100)
+    tail = int(imputation_tokens) + int(vision_tokens)
+    if tail > 0:
+        labels = F.pad(labels, (0, tail), value=-100)
+    seq_len = logits.size(1)
+    if labels.size(1) < seq_len:
+        labels = F.pad(labels, (0, seq_len - labels.size(1)), value=-100)
+    elif labels.size(1) > seq_len:
+        labels = labels[:, :seq_len]
+    shift_logits = logits[..., :-1, :].contiguous().float()
+    shift_labels = labels[..., 1:].contiguous()
+    valid = (shift_labels != -100).sum().item()
+    if valid == 0:
+        return logits.new_tensor(0.0)
+    loss = F.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=-100,
+    )
+    return loss
+
+
 def normalize_text(text: str) -> str:
     return " ".join(text.lower().strip().split())
 
@@ -948,7 +983,7 @@ def main() -> None:
             except Exception:
                 prefix_tokens = 0
                 imputation_tokens = 0
-            loss = R3Trainer._causal_ce(
+            loss = causal_ce(
                 student_out["logits"].float(),
                 corrupted_tokens["labels"],
                 prefix_tokens=prefix_tokens,
