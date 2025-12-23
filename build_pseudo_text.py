@@ -493,6 +493,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", type=str, default="train")
     parser.add_argument("--output", type=Path, required=True, help="Destination JSONL file.")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap per dataset.")
+    parser.add_argument(
+        "--num_shards",
+        type=int,
+        default=1,
+        help="Shard count for parallel runs (default 1).",
+    )
+    parser.add_argument(
+        "--shard_idx",
+        type=int,
+        default=0,
+        help="Shard index in [0, num_shards).",
+    )
     parser.add_argument("--enable_ocr", action="store_true", help="Run OCR when samples lack tokens.")
     parser.add_argument(
         "--ocr_backend",
@@ -616,6 +628,8 @@ def process_single_dataset(
     clean_max_chars: Optional[int] = 2000,
     coalesce_tokens: int = 128,
     disable_coalesce: bool = False,
+    shard_idx: int = 0,
+    num_shards: int = 1,
 ) -> List[Dict]:
     """
     Process a single dataset and return pseudo-text artifacts.
@@ -630,7 +644,13 @@ def process_single_dataset(
     
     artifacts = []
     upper = min(len(dataset), limit) if limit else len(dataset)
-    print(f"  总样本数: {upper}")
+    if num_shards < 1:
+        num_shards = 1
+    if shard_idx < 0 or shard_idx >= num_shards:
+        raise ValueError(f"shard_idx must be in [0, {num_shards}), got {shard_idx}")
+    indices = [idx for idx in range(upper) if idx % num_shards == shard_idx]
+    total = len(indices)
+    print(f"  总样本数: {upper} | shard={shard_idx}/{num_shards} | shard样本数={total}")
     start_time = time.time()
     sample_preview: Optional[Dict] = None
 
@@ -705,9 +725,9 @@ def process_single_dataset(
     def log_progress(done: int):
         elapsed = time.time() - start_time
         rate = done / elapsed if elapsed > 0 else 0.0
-        remaining = upper - done
+        remaining = total - done
         eta = remaining / rate if rate > 0 else float("inf")
-        pct = done / upper * 100 if upper else 0
+        pct = done / total * 100 if total else 0
         preview_txt = ""
         if sample_preview:
             try:
@@ -718,7 +738,7 @@ def process_single_dataset(
 
     if num_workers and num_workers > 1:
         with ThreadPoolExecutor(max_workers=num_workers) as ex:
-            futures = {ex.submit(handle_idx, idx): idx for idx in range(upper)}
+            futures = {ex.submit(handle_idx, idx): idx for idx in indices}
             done = 0
             for fut in as_completed(futures):
                 res = fut.result()
@@ -729,16 +749,21 @@ def process_single_dataset(
                 if log_interval and done % log_interval == 0:
                     log_progress(done)
     else:
-        for idx in range(upper):
+        done = 0
+        for idx in indices:
             res = handle_idx(idx)
             if res:
                 artifacts.append(res["artifact"])
                 sample_preview = res.get("preview")
-            if log_interval and (idx + 1) % log_interval == 0:
-                log_progress(idx + 1)
+            done += 1
+            if log_interval and done % log_interval == 0:
+                log_progress(done)
     
     total_elapsed = time.time() - start_time
-    print(f"Processed {len(artifacts)} samples from {root} in {total_elapsed/60:.1f} min")
+    print(
+        f"Processed {len(artifacts)} samples from {root} (shard {shard_idx}/{num_shards}) "
+        f"in {total_elapsed/60:.1f} min"
+    )
     return artifacts
 
 
@@ -746,6 +771,10 @@ def main() -> None:
     args = parse_args()
     global OCR_BACKEND
     OCR_BACKEND = args.ocr_backend
+    if args.num_shards < 1:
+        raise ValueError("num_shards must be >= 1")
+    if args.shard_idx < 0 or args.shard_idx >= args.num_shards:
+        raise ValueError("shard_idx must be in [0, num_shards)")
 
     # 示例（中文说明）:
     # 单卡/CPU 生成伪文本 + OCR：
@@ -843,6 +872,8 @@ def main() -> None:
             args.clean_max_chars,
             args.coalesce_tokens,
             args.disable_coalesce,
+            args.shard_idx,
+            args.num_shards,
         )
         all_artifacts.extend(artifacts)
     
