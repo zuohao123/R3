@@ -19,7 +19,7 @@ dataset:
   eval_split: val
   batch_size: 1          # 8×V100 DDP 安全起步（单卡不 OOM）；如显存富余再逐步加到 2
   num_workers: 2
-  pseudo_corpus: ./artifacts/pseudo_text_all_train.jsonl   # 离线伪文本库（build_pseudo_text.py 输出）
+  pseudo_corpus: ./artifacts/pseudo_text_all_train.cleaned.jsonl   # 离线伪文本库（清洗版）
 model:
   name: ./models/Qwen3-VL-8B-Instruct   # 使用 8B 以追求 SOTA，需确保本地权重在此路径
   lora_rank: 8                # 降低 LoRA 尺寸以进一步节省显存
@@ -39,7 +39,7 @@ model:
   cache_dir: ./hf_cache
   revision: null
   local_files_only: true
-  retrieval_corpus_path: ./artifacts/pseudo_text_all_train.jsonl
+  retrieval_corpus_path: ./artifacts/pseudo_text_all_train.cleaned.jsonl
   enable_corruption: false   # Stage1 关；Stage2A/2B 改为 true
   enable_retrieval: false    # Stage1 可关；Stage2A/2B 改为 true
   enable_prefix: true

@@ -3,7 +3,7 @@
 ## 资源与前置
 - 硬件：推荐 8×V100 32GB（单机），CPU 64c，RAM 128GiB。（4 卡同机也可跑，吞吐更低）
 - 模型：`./models/Qwen3-VL-8B-Instruct`（本地权重）。
-- 数据：`./data_pipeline/data/{docvqa,infovqa,chartqa}`（train/val），伪文本库 `./artifacts/pseudo_text_all_train.jsonl`。
+- 数据：`./data_pipeline/data/{docvqa,infovqa,chartqa}`（train/val），伪文本库 `./artifacts/pseudo_text_all_train.cleaned.jsonl`。
 - 依赖：`pip install -r requirements.txt`。
 - 日志：`train.log`（loss）、`console.log`（进度），TensorBoard：`tensorboard --logdir checkpoints`.
 
