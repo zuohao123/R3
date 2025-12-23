@@ -172,13 +172,13 @@ class R3Trainer(Trainer):
         self.use_chat_template = use_chat_template
         self._last_metrics: Dict[str, float] = {}
 
-    def log(self, logs: Dict[str, float]) -> None:
+    def log(self, logs: Dict[str, float], *args, **kwargs) -> None:
         # Inject latest per-step metrics captured in compute_loss.
         if getattr(self, "_last_metrics", None):
             for key, val in self._last_metrics.items():
                 if key not in logs:
                     logs[key] = val
-        super().log(logs)
+        super().log(logs, *args, **kwargs)
 
     def create_optimizer(self):
         """
