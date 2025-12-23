@@ -37,6 +37,7 @@ class R3Dataset(Dataset):
         pseudo_text_corruptor: Optional[PseudoTextCorruptor] = None,
         pseudo_text_max_items: Optional[int] = None,
         pseudo_text_max_chars: Optional[int] = None,
+        pseudo_text_chunk_tokens: Optional[int] = 32,
         corruption_prob: float = 1.0,
     ) -> None:
         self.base = base_dataset
@@ -48,6 +49,7 @@ class R3Dataset(Dataset):
         self.image_corruptor = image_corruptor or ImageCorruptor(ImageCorruptionConfig())
         self.pseudo_text_max_items = pseudo_text_max_items
         self.pseudo_text_max_chars = pseudo_text_max_chars
+        self.pseudo_text_chunk_tokens = pseudo_text_chunk_tokens
         self.corruption_prob = float(corruption_prob)
         if pseudo_text_corruptor:
             self.pseudo_text_corruptor = pseudo_text_corruptor
@@ -72,11 +74,11 @@ class R3Dataset(Dataset):
         # Prefer offline pseudo-text corpus if provided
         if sample.get("id") in self.pseudo_corpus:
             pseudo_text = self.pseudo_corpus[sample["id"]]
-        pseudo_text = self._coalesce_pseudo_text(pseudo_text)
+        pseudo_text = self._coalesce_pseudo_text(pseudo_text, self.pseudo_text_chunk_tokens)
         pseudo_text = self._truncate_pseudo_text(pseudo_text)
         if not pseudo_text and self.pseudo_builder:
             pseudo_text = self.pseudo_builder.build(sample)
-        pseudo_text = self._coalesce_pseudo_text(pseudo_text)
+        pseudo_text = self._coalesce_pseudo_text(pseudo_text, self.pseudo_text_chunk_tokens)
         pseudo_text = self._truncate_pseudo_text(pseudo_text)
         do_corrupt = self.apply_corruption and (random.random() < self.corruption_prob)
         corrupted_pseudo = self.pseudo_text_corruptor(pseudo_text) if do_corrupt else pseudo_text
@@ -132,7 +134,9 @@ class R3Dataset(Dataset):
         return avg_words < 1.5 and short_ratio > 0.8
 
     @classmethod
-    def _coalesce_pseudo_text(cls, entries: List[str], chunk_tokens: int = 12) -> List[str]:
+    def _coalesce_pseudo_text(cls, entries: List[str], chunk_tokens: Optional[int]) -> List[str]:
+        if not chunk_tokens or chunk_tokens <= 0:
+            return entries
         if not cls._should_coalesce(entries):
             return entries
         tokens: List[str] = []

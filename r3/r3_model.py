@@ -50,6 +50,7 @@ class R3ModelConfig:
     retrieval_cache_path: Optional[str] = None
     retrieval_corpus_path: Optional[str] = None
     retrieval_max_evidence_tokens: int = 128
+    retrieval_chunk_tokens: int = 32
 
     # Lightweight compatibility with HF callbacks that expect PretrainedConfig APIs.
     def to_dict(self) -> Dict:
@@ -103,6 +104,7 @@ class R3Model(torch.nn.Module):
                 max_evidence_tokens=config.retrieval_max_evidence_tokens,
                 use_pseudo_query=config.use_pseudo_query,
                 pseudo_query_weight=config.pseudo_query_weight,
+                external_chunk_tokens=config.retrieval_chunk_tokens,
             ),
             embedding_layer=self.base_vlm.model.get_input_embeddings(),
             tokenizer=self.base_vlm.tokenizer,

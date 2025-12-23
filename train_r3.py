@@ -477,7 +477,7 @@ class R3Trainer(Trainer):
             if not pseudo_entries:
                 return []
             # Keep some room for the short answer; allow at least 2 tokens.
-            min_answer_tokens = 2
+            min_answer_tokens = 16
             max_prompt_len = max_length - min_answer_tokens
             base_prompt = build_prompt(question, [])
             base_len = prompt_len(base_prompt)
@@ -769,6 +769,10 @@ def main() -> None:
             pseudo_text_drop_prob=pt_drop,
             pseudo_text_max_items=pt_max_items,
             pseudo_text_max_chars=pt_max_chars,
+            pseudo_text_chunk_tokens=entry.get(
+                "pseudo_text_chunk_tokens",
+                dataset_section.get("pseudo_text_chunk_tokens", 32),
+            ),
             corruption_prob=corr_prob,
         )
 
@@ -837,6 +841,7 @@ def main() -> None:
         retrieval_cache_path=model_section.get("retrieval_cache_path"),
         retrieval_corpus_path=model_section.get("retrieval_corpus_path"),
         retrieval_max_evidence_tokens=model_section.get("retrieval_max_evidence_tokens", 128),
+        retrieval_chunk_tokens=model_section.get("retrieval_chunk_tokens", 32),
         consistency_start_step=model_section.get("consistency_start_step", 0),
         consistency_ramp_steps=model_section.get("consistency_ramp_steps", 0),
     )

@@ -27,6 +27,7 @@ class RetrievalModuleConfig:
     external_chunk_size: int = 4096   # CPU top-k chunk size for large external corpus
     use_pseudo_query: bool = True
     pseudo_query_weight: float = 0.6
+    external_chunk_tokens: int = 32   # merge token-level OCR into longer evidence chunks
 
 
 @dataclass
@@ -404,8 +405,9 @@ class PseudoTextRetrievalModule(nn.Module):
                             continue
                         tokens.extend(text.split())
                     chunks: List[str] = []
-                    for idx in range(0, len(tokens), 12):
-                        chunk = " ".join(tokens[idx : idx + 12]).strip()
+                    chunk_tokens = max(1, int(self.config.external_chunk_tokens))
+                    for idx in range(0, len(tokens), chunk_tokens):
+                        chunk = " ".join(tokens[idx : idx + chunk_tokens]).strip()
                         if chunk:
                             chunks.append(chunk)
                     unique_texts = chunks

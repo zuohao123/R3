@@ -243,7 +243,7 @@ def normalize_basic(text: str) -> str:
     return t
 
 
-def summarize_entries(entries: List[str], max_items: int = 5, max_chars: int = 160) -> List[str]:
+def summarize_entries(entries: List[str], max_items: int = 5, max_chars: int = 320) -> List[str]:
     summary: List[str] = []
     for entry in entries[:max_items]:
         text = str(entry).replace("\n", " ").strip()
@@ -494,7 +494,7 @@ def tokenize_with_template(
     def trim_pseudo_to_budget(question: str, pseudo_entries: List[str]) -> List[str]:
         if not pseudo_entries:
             return []
-        min_answer_tokens = 2
+        min_answer_tokens = 16
         max_prompt_len = max_length - min_answer_tokens
         base_prompt = build_prompt(question, [])
         base_len = prompt_len(base_prompt)
@@ -677,6 +677,7 @@ def main() -> None:
         pseudo_text_corruptor=eval_pseudo_corruptor,
         pseudo_text_max_items=pseudo_text_max_items,
         pseudo_text_max_chars=pseudo_text_max_chars,
+        pseudo_text_chunk_tokens=dataset_cfg.get("pseudo_text_chunk_tokens", 32),
     )
     if args.limit:
         dataset = Subset(dataset, list(range(min(args.limit, len(dataset)))))
@@ -739,6 +740,7 @@ def main() -> None:
             retrieval_cache_path=model_section.get("retrieval_cache_path"),
             retrieval_corpus_path=model_section.get("retrieval_corpus_path"),
             retrieval_max_evidence_tokens=model_section.get("retrieval_max_evidence_tokens", 128),
+            retrieval_chunk_tokens=model_section.get("retrieval_chunk_tokens", 32),
         )
         model = R3Model(model_cfg)
         # If the backbone is sharded via `device_map`, a global `.to(device)` will try to
