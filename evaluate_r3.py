@@ -655,6 +655,7 @@ def main() -> None:
     image_corr_cfg = dataset_cfg.get("image_corruption", {}) or {}
     pseudo_text_max_items = dataset_cfg.get("pseudo_text_max_items")
     pseudo_text_max_chars = dataset_cfg.get("pseudo_text_max_chars")
+    pseudo_text_chunk_tokens = dataset_cfg.get("pseudo_text_chunk_tokens", 32)
     if "multi" in dataset_cfg:
         chosen = None
         if dataset_type != "auto":
@@ -668,6 +669,7 @@ def main() -> None:
         image_corr_cfg = chosen.get("image_corruption", image_corr_cfg) or image_corr_cfg
         pseudo_text_max_items = chosen.get("pseudo_text_max_items", pseudo_text_max_items)
         pseudo_text_max_chars = chosen.get("pseudo_text_max_chars", pseudo_text_max_chars)
+        pseudo_text_chunk_tokens = chosen.get("pseudo_text_chunk_tokens", pseudo_text_chunk_tokens)
 
     eval_image_corruptor = None
     eval_pseudo_corruptor = None
@@ -692,7 +694,7 @@ def main() -> None:
         pseudo_text_corruptor=eval_pseudo_corruptor,
         pseudo_text_max_items=pseudo_text_max_items,
         pseudo_text_max_chars=pseudo_text_max_chars,
-        pseudo_text_chunk_tokens=dataset_cfg.get("pseudo_text_chunk_tokens", 32),
+        pseudo_text_chunk_tokens=pseudo_text_chunk_tokens,
     )
     if args.limit:
         dataset = Subset(dataset, list(range(min(args.limit, len(dataset)))))

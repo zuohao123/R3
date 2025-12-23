@@ -119,7 +119,7 @@ class R3Dataset(Dataset):
 
     @staticmethod
     def _should_coalesce(entries: List[str]) -> bool:
-        if not entries or len(entries) < 40:
+        if not entries or len(entries) < 20:
             return False
         word_counts = []
         for entry in entries:
@@ -130,23 +130,43 @@ class R3Dataset(Dataset):
         if not word_counts:
             return False
         avg_words = sum(word_counts) / len(word_counts)
-        short_ratio = sum(1 for c in word_counts if c <= 1) / len(word_counts)
-        return avg_words < 1.5 and short_ratio > 0.8
+        short_ratio = sum(1 for c in word_counts if c <= 2) / len(word_counts)
+        return avg_words <= 2.0 and short_ratio >= 0.6
+
+    @staticmethod
+    def _normalize_entry(text: str) -> str:
+        if text is None:
+            return ""
+        cleaned = " ".join(str(text).strip().split())
+        if not cleaned:
+            return ""
+        alnum = sum(ch.isalnum() for ch in cleaned)
+        if alnum == 0 and len(cleaned) <= 3:
+            return ""
+        if len(cleaned) >= 6:
+            uniq = set(cleaned.lower())
+            if len(uniq) <= 2 and (alnum / len(cleaned)) < 0.6:
+                return ""
+        return cleaned
 
     @classmethod
     def _coalesce_pseudo_text(cls, entries: List[str], chunk_tokens: Optional[int]) -> List[str]:
         if not chunk_tokens or chunk_tokens <= 0:
             return entries
-        if not cls._should_coalesce(entries):
-            return entries
-        tokens: List[str] = []
+        normalized = []
         for entry in entries:
-            text = str(entry).strip()
-            if not text:
-                continue
-            tokens.extend(text.split())
-        if not tokens:
+            cleaned = cls._normalize_entry(entry)
+            if cleaned:
+                normalized.append(cleaned)
+        if not normalized:
             return entries
+        if not cls._should_coalesce(normalized):
+            return normalized
+        tokens: List[str] = []
+        for entry in normalized:
+            tokens.extend(entry.split())
+        if not tokens:
+            return normalized
         chunks: List[str] = []
         for idx in range(0, len(tokens), chunk_tokens):
             chunk = " ".join(tokens[idx : idx + chunk_tokens]).strip()

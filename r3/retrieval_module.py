@@ -378,7 +378,42 @@ class PseudoTextRetrievalModule(nn.Module):
         path = Path(corpus_path)
         if not path.exists():
             return
+        def _normalize_entry(text: str) -> str:
+            cleaned = " ".join(str(text).strip().split())
+            if not cleaned:
+                return ""
+            alnum = sum(ch.isalnum() for ch in cleaned)
+            if alnum == 0 and len(cleaned) <= 3:
+                return ""
+            if len(cleaned) >= 6:
+                uniq = set(cleaned.lower())
+                if len(uniq) <= 2 and (alnum / len(cleaned)) < 0.6:
+                    return ""
+            return cleaned
+
+        def _should_coalesce(entries: List[str]) -> bool:
+            if not entries or len(entries) < 20:
+                return False
+            word_counts = [len(t.split()) for t in entries if t.strip()]
+            if not word_counts:
+                return False
+            avg_words = sum(word_counts) / len(word_counts)
+            short_ratio = sum(1 for c in word_counts if c <= 2) / len(word_counts)
+            return avg_words <= 2.0 and short_ratio >= 0.6
+
+        def _coalesce(entries: List[str], chunk_tokens: int) -> List[str]:
+            tokens: List[str] = []
+            for t in entries:
+                tokens.extend(t.split())
+            chunks: List[str] = []
+            for idx in range(0, len(tokens), chunk_tokens):
+                chunk = " ".join(tokens[idx : idx + chunk_tokens]).strip()
+                if chunk:
+                    chunks.append(chunk)
+            return chunks
+
         texts: List[str] = []
+        chunk_tokens = max(1, int(self.config.external_chunk_tokens))
         with path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -387,30 +422,22 @@ class PseudoTextRetrievalModule(nn.Module):
                 try:
                     import json
                     obj = json.loads(line)
-                    texts.extend(obj.get("pseudo_text", []))
+                    entries = obj.get("pseudo_text", [])
+                    if not isinstance(entries, list):
+                        entries = [str(entries)]
+                    normalized = []
+                    for entry in entries:
+                        cleaned = _normalize_entry(entry)
+                        if cleaned:
+                            normalized.append(cleaned)
+                    if not normalized:
+                        continue
+                    if _should_coalesce(normalized):
+                        normalized = _coalesce(normalized, chunk_tokens)
+                    texts.extend(normalized)
                 except Exception:
                     continue
         unique_texts = [t for t in texts if t]
-        # If the corpus is token-level OCR (lots of single-word entries), coalesce into chunks.
-        if unique_texts:
-            word_counts = [len(str(t).split()) for t in unique_texts if str(t).strip()]
-            if word_counts:
-                avg_words = sum(word_counts) / len(word_counts)
-                short_ratio = sum(1 for c in word_counts if c <= 1) / len(word_counts)
-                if len(unique_texts) >= 40 and avg_words < 1.5 and short_ratio > 0.8:
-                    tokens: List[str] = []
-                    for t in unique_texts:
-                        text = str(t).strip()
-                        if not text:
-                            continue
-                        tokens.extend(text.split())
-                    chunks: List[str] = []
-                    chunk_tokens = max(1, int(self.config.external_chunk_tokens))
-                    for idx in range(0, len(tokens), chunk_tokens):
-                        chunk = " ".join(tokens[idx : idx + chunk_tokens]).strip()
-                        if chunk:
-                            chunks.append(chunk)
-                    unique_texts = chunks
         if not unique_texts:
             return
         device = next(self._embedding_layer.parameters()).device
