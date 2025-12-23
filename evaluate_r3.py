@@ -491,10 +491,15 @@ def tokenize_with_template(
     def prompt_len(prompt: str) -> int:
         return len(tokenizer(prompt, add_special_tokens=False)["input_ids"])
 
-    def trim_pseudo_to_budget(question: str, pseudo_entries: List[str]) -> List[str]:
+    def label_len(label: str) -> int:
+        if not isinstance(label, str) or not label.strip():
+            return 1
+        return len(tokenizer(label, add_special_tokens=False)["input_ids"])
+
+    def trim_pseudo_to_budget(question: str, pseudo_entries: List[str], answer_tokens: int) -> List[str]:
         if not pseudo_entries:
             return []
-        min_answer_tokens = 32
+        min_answer_tokens = max(32, int(answer_tokens) + 2)
         max_prompt_len = max_length - min_answer_tokens
         base_prompt = build_prompt(question, [])
         base_len = prompt_len(base_prompt)
@@ -522,11 +527,19 @@ def tokenize_with_template(
 
     questions = split["question"]
     labels_text = split.get("labels", [""] * len(questions))
+    sane_labels = []
+    for lbl in labels_text:
+        if isinstance(lbl, str) and lbl.strip() == "":
+            sane_labels.append("UNKNOWN")
+        else:
+            sane_labels.append(lbl)
+    labels_text = sane_labels
     raw_pseudo = split.get("pseudo_text", [[] for _ in questions]) if use_pseudo_text else [[] for _ in questions]
 
     prompt_pseudo = []
-    for q, pseudo in zip(questions, raw_pseudo):
-        prompt_pseudo.append(trim_pseudo_to_budget(q, pseudo) if use_pseudo_text else [])
+    label_lens = [label_len(lbl) for lbl in labels_text]
+    for q, pseudo, ans_len in zip(questions, raw_pseudo, label_lens):
+        prompt_pseudo.append(trim_pseudo_to_budget(q, pseudo, ans_len) if use_pseudo_text else [])
 
     prompts = build_prompts(questions, prompt_pseudo, labels_text, tokenizer, use_chat_template)
     prompt_texts = [p for p, _ in prompts]

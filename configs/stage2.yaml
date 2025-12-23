@@ -9,8 +9,8 @@ dataset:
       corruption_prob: 0.7
       pseudo_text_drop_prob: 0.2
       pseudo_text_max_items: 40
-      pseudo_text_max_chars: 800
-      pseudo_text_chunk_tokens: 64
+      pseudo_text_max_chars: 2000
+      pseudo_text_chunk_tokens: 128
       image_corruption:
         occlusion_prob: 0.5
         occlusion_ratio: 0.25
@@ -24,8 +24,8 @@ dataset:
       corruption_prob: 0.7
       pseudo_text_drop_prob: 0.2
       pseudo_text_max_items: 40
-      pseudo_text_max_chars: 800
-      pseudo_text_chunk_tokens: 64
+      pseudo_text_max_chars: 2000
+      pseudo_text_chunk_tokens: 128
       image_corruption:
         occlusion_prob: 0.5
         occlusion_ratio: 0.25
@@ -39,8 +39,8 @@ dataset:
       corruption_prob: 0.7
       pseudo_text_drop_prob: 0.2
       pseudo_text_max_items: 40
-      pseudo_text_max_chars: 800
-      pseudo_text_chunk_tokens: 64
+      pseudo_text_max_chars: 2000
+      pseudo_text_chunk_tokens: 128
       image_corruption:
         occlusion_prob: 0.5
         occlusion_ratio: 0.25
@@ -70,8 +70,8 @@ model:
   local_files_only: true
   max_seq_length: 10240       # 更长序列，减少召回内容被截断
   retrieval_corpus_path: ./artifacts/pseudo_text_all_train.jsonl  # 评测时让 val 召回训练库
-  retrieval_max_evidence_tokens: 512
-  retrieval_chunk_tokens: 64
+  retrieval_max_evidence_tokens: 1024
+  retrieval_chunk_tokens: 128
   enable_corruption: true
   enable_retrieval: true
   enable_prefix: true

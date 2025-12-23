@@ -18,6 +18,7 @@
 - lr：Stage1 8e-5；Stage2 5e-5；Stage3 3e-5；wd=0.01；warmup 5%/8%。
 - 分组 LR：Stage2/3 默认 `lr_r3_mult=2.0`（R³模块更快学），`lr_lora_mult=0.5/0.3`（LoRA 更稳）。
 - `device_map=auto`：DDP 时会自动映射到 `LOCAL_RANK` 的单卡（不会跨卡切分）。
+- Stage2/3 长序列：`max_seq_length=10240`，`retrieval_max_evidence_tokens=1024`，`retrieval_chunk_tokens=128`；伪文本 `pseudo_text_max_chars=2000`，`pseudo_text_chunk_tokens=128`。
 - 建议环境变量：`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`（降低碎片化导致的 alloc fail）。
 
 ## 阶段目标自检（确认 R³ 真正在训练）
@@ -28,7 +29,7 @@
 | Stage2（轻 PMC） | 学会在轻度腐蚀下用检索补全，并保持与 clean 一致 | `apply_corruption=true`；`enable_retrieval=true`；`enable_consistency=true` | 是（retrieval→reconstruction→reasoner） | `task_loss + λ * consistency_loss` | loss 能下降；且 `Trainable params: R3=...` 非 0；腐蚀强度来自 stage2.yaml |
 | Stage3（重 PMC） | 强化鲁棒性与抗幻觉 | 同 Stage2，但腐蚀更强、`lambda_consistency` 更高 | 是 | 同 Stage2 | 评测在 `apply_corruption=true` 下相对 Stage2 更稳；stage3.yaml 腐蚀更强 |
 
-说明：`R3Trainer` 已对齐 token 布局做了标签 padding（prefix/imputation/vision 都用 `-100` 忽略），避免“插入额外 token 但 loss 仍按原文本对齐”的无效训练问题。
+说明：`R3Trainer` 已对齐 token 布局做了标签 padding（prefix/imputation/vision 都用 `-100` 忽略），并按真实答案长度预留 token 预算，避免“伪文本/召回占满，标签全为 -100”导致 loss=0。
 
 ## 命令大表
 

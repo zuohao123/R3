@@ -473,11 +473,16 @@ class R3Trainer(Trainer):
         def prompt_len(prompt: str) -> int:
             return len(tokenizer(prompt, add_special_tokens=False)["input_ids"])
 
-        def trim_pseudo_to_budget(question: str, pseudo_entries: List[str]) -> List[str]:
+        def label_len(label: str) -> int:
+            if not isinstance(label, str) or not label.strip():
+                return 1
+            return len(tokenizer(label, add_special_tokens=False)["input_ids"])
+
+        def trim_pseudo_to_budget(question: str, pseudo_entries: List[str], answer_tokens: int) -> List[str]:
             if not pseudo_entries:
                 return []
-            # Keep some room for the short answer; allow at least 2 tokens.
-            min_answer_tokens = 32
+            # Reserve space for the real answer tokens to avoid masking all labels.
+            min_answer_tokens = max(32, int(answer_tokens) + 2)
             max_prompt_len = max_length - min_answer_tokens
             base_prompt = build_prompt(question, [])
             base_len = prompt_len(base_prompt)
@@ -516,8 +521,9 @@ class R3Trainer(Trainer):
         labels_text = sane_labels
         raw_pseudo = split.get("pseudo_text", [[] for _ in questions]) if use_pseudo_text else [[] for _ in questions]
         prompt_pseudo = []
-        for q, pseudo in zip(questions, raw_pseudo):
-            prompt_pseudo.append(trim_pseudo_to_budget(q, pseudo) if use_pseudo_text else [])
+        label_lens = [label_len(lbl) for lbl in labels_text]
+        for q, pseudo, ans_len in zip(questions, raw_pseudo, label_lens):
+            prompt_pseudo.append(trim_pseudo_to_budget(q, pseudo, ans_len) if use_pseudo_text else [])
 
         prompts = []
         for q, pseudo in zip(questions, prompt_pseudo):
