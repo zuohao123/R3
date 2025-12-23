@@ -264,6 +264,18 @@ def load_pseudo_corpus(path: Optional[str]) -> Dict[str, List[str]]:
     if not corpus_path.exists():
         raise FileNotFoundError(f"Pseudo-text corpus not found: {path}")
     records: Dict[str, List[str]] = {}
+
+    def is_fallback(entries: List[str]) -> bool:
+        has_text = False
+        for text in entries:
+            stripped = str(text).strip()
+            if not stripped:
+                continue
+            has_text = True
+            if not (stripped.startswith("[Q]") or stripped.startswith("[ID]")):
+                return False
+        return has_text
+
     with corpus_path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -272,6 +284,21 @@ def load_pseudo_corpus(path: Optional[str]) -> Dict[str, List[str]]:
             obj = json.loads(line)
             doc_id = obj.get("doc_id")
             pseudo = obj.get("pseudo_text", [])
+            if not isinstance(pseudo, list):
+                pseudo = [str(pseudo)]
             if doc_id:
-                records[str(doc_id)] = pseudo
+                key = str(doc_id)
+                if key in records:
+                    existing = records[key]
+                    existing_fallback = is_fallback(existing)
+                    incoming_fallback = is_fallback(pseudo)
+                    if existing_fallback and not incoming_fallback:
+                        records[key] = pseudo
+                    elif not existing_fallback and incoming_fallback:
+                        continue
+                    else:
+                        merged = existing + [t for t in pseudo if t not in existing]
+                        records[key] = merged
+                else:
+                    records[key] = pseudo
     return records
