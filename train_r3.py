@@ -477,7 +477,7 @@ class R3Trainer(Trainer):
             if not pseudo_entries:
                 return []
             # Keep some room for the short answer; allow at least 2 tokens.
-            min_answer_tokens = 16
+            min_answer_tokens = 32
             max_prompt_len = max_length - min_answer_tokens
             base_prompt = build_prompt(question, [])
             base_len = prompt_len(base_prompt)

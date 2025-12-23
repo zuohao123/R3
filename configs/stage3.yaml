@@ -9,8 +9,8 @@ dataset:
       corruption_prob: 0.85
       pseudo_text_drop_prob: 0.4
       pseudo_text_max_items: 40
-      pseudo_text_max_chars: 400
-      pseudo_text_chunk_tokens: 48
+      pseudo_text_max_chars: 800
+      pseudo_text_chunk_tokens: 64
       image_corruption:
         occlusion_prob: 0.7
         occlusion_ratio: 0.35
@@ -24,8 +24,8 @@ dataset:
       corruption_prob: 0.85
       pseudo_text_drop_prob: 0.4
       pseudo_text_max_items: 40
-      pseudo_text_max_chars: 400
-      pseudo_text_chunk_tokens: 48
+      pseudo_text_max_chars: 800
+      pseudo_text_chunk_tokens: 64
       image_corruption:
         occlusion_prob: 0.7
         occlusion_ratio: 0.35
@@ -39,8 +39,8 @@ dataset:
       corruption_prob: 0.85
       pseudo_text_drop_prob: 0.4
       pseudo_text_max_items: 40
-      pseudo_text_max_chars: 400
-      pseudo_text_chunk_tokens: 48
+      pseudo_text_max_chars: 800
+      pseudo_text_chunk_tokens: 64
       image_corruption:
         occlusion_prob: 0.7
         occlusion_ratio: 0.35
@@ -68,10 +68,10 @@ model:
   cache_dir: ./hf_cache
   revision: null
   local_files_only: true
-  max_seq_length: 8192        # 加长序列，降低答案被截断风险
+  max_seq_length: 10240       # 更长序列，减少召回内容被截断
   retrieval_corpus_path: ./artifacts/pseudo_text_all_train.jsonl  # 评测时让 val 召回训练库
-  retrieval_max_evidence_tokens: 256
-  retrieval_chunk_tokens: 48
+  retrieval_max_evidence_tokens: 512
+  retrieval_chunk_tokens: 64
   enable_corruption: true
   enable_retrieval: true
   enable_prefix: true

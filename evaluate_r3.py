@@ -494,7 +494,7 @@ def tokenize_with_template(
     def trim_pseudo_to_budget(question: str, pseudo_entries: List[str]) -> List[str]:
         if not pseudo_entries:
             return []
-        min_answer_tokens = 16
+        min_answer_tokens = 32
         max_prompt_len = max_length - min_answer_tokens
         base_prompt = build_prompt(question, [])
         base_len = prompt_len(base_prompt)
