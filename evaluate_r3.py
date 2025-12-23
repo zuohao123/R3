@@ -688,6 +688,7 @@ def main() -> None:
         base_dataset,
         vision_tokens=cfg["model"].get("vision_tokens", 16),
         hidden_size=cfg["model"].get("hidden_size", 4096),
+        dataset_type=dataset_type,
         apply_corruption=apply_corruption,
         pseudo_corpus=pseudo_corpus,
         image_corruptor=eval_image_corruptor,

@@ -107,6 +107,49 @@ def format_eta(seconds: float) -> str:
     return f"ETA {m:02d}:{s:02d}"
 
 
+def normalize_entry(text: str, max_chars: Optional[int]) -> str:
+    cleaned = " ".join(str(text).strip().split())
+    if not cleaned:
+        return ""
+    if max_chars and max_chars > 0 and len(cleaned) > max_chars:
+        cleaned = cleaned[: max_chars]
+    if len(cleaned) <= 2 and not any(ch.isdigit() for ch in cleaned):
+        return ""
+    alnum = sum(ch.isalnum() for ch in cleaned)
+    if alnum == 0 and len(cleaned) <= 3:
+        return ""
+    if len(cleaned) >= 6:
+        uniq = set(cleaned.lower())
+        if len(uniq) <= 2 and (alnum / len(cleaned)) < 0.6:
+            return ""
+    return cleaned
+
+
+def should_coalesce(entries: List[str]) -> bool:
+    if not entries or len(entries) < 20:
+        return False
+    word_counts = [len(e.split()) for e in entries if e.strip()]
+    if not word_counts:
+        return False
+    avg_words = sum(word_counts) / len(word_counts)
+    short_ratio = sum(1 for c in word_counts if c <= 2) / len(word_counts)
+    return avg_words <= 2.0 and short_ratio >= 0.6
+
+
+def coalesce_entries(entries: List[str], chunk_tokens: int) -> List[str]:
+    tokens: List[str] = []
+    for entry in entries:
+        tokens.extend(entry.split())
+    if not tokens:
+        return entries
+    chunks: List[str] = []
+    for idx in range(0, len(tokens), chunk_tokens):
+        chunk = " ".join(tokens[idx : idx + chunk_tokens]).strip()
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
 def resolve_model_path(
     model_name: str,
     cache_dir: Optional[Path],
@@ -487,6 +530,23 @@ def parse_args() -> argparse.Namespace:
         default=32,
         help="Caption 生成的最大新 token 数，减小可显著加速/减小显存占用。",
     )
+    parser.add_argument(
+        "--clean_max_chars",
+        type=int,
+        default=2000,
+        help="单条伪文本最长字符数（清洗阶段截断，默认 2000）。",
+    )
+    parser.add_argument(
+        "--coalesce_tokens",
+        type=int,
+        default=128,
+        help="当 OCR 过于碎片时合并的 token 数（默认 128）。",
+    )
+    parser.add_argument(
+        "--disable_coalesce",
+        action="store_true",
+        help="禁用 token 合并，保留原始 OCR 粒度。",
+    )
     return parser.parse_args()
 
 
@@ -500,6 +560,9 @@ def process_single_dataset(
     limit: Optional[int] = None,
     log_interval: int = 500,
     num_workers: int = 1,
+    clean_max_chars: Optional[int] = 2000,
+    coalesce_tokens: int = 128,
+    disable_coalesce: bool = False,
 ) -> List[Dict]:
     """
     Process a single dataset and return pseudo-text artifacts.
@@ -551,6 +614,14 @@ def process_single_dataset(
 
             # Build pseudo-text entries
             entries = builder.build(sample)
+            cleaned_entries: List[str] = []
+            for entry in entries:
+                cleaned = normalize_entry(entry, clean_max_chars)
+                if cleaned:
+                    cleaned_entries.append(cleaned)
+            if cleaned_entries and not disable_coalesce and should_coalesce(cleaned_entries):
+                cleaned_entries = coalesce_entries(cleaned_entries, max(1, int(coalesce_tokens)))
+            entries = cleaned_entries
             if entries:
                 artifact = {
                     "doc_id": sample["id"],
@@ -714,6 +785,9 @@ def main() -> None:
             args.limit,
             args.log_interval,
             args.num_workers,
+            args.clean_max_chars,
+            args.coalesce_tokens,
+            args.disable_coalesce,
         )
         all_artifacts.extend(artifacts)
     

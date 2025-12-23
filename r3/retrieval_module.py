@@ -382,6 +382,8 @@ class PseudoTextRetrievalModule(nn.Module):
             cleaned = " ".join(str(text).strip().split())
             if not cleaned:
                 return ""
+            if len(cleaned) <= 2 and not any(ch.isdigit() for ch in cleaned):
+                return ""
             alnum = sum(ch.isalnum() for ch in cleaned)
             if alnum == 0 and len(cleaned) <= 3:
                 return ""

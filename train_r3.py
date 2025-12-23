@@ -437,7 +437,7 @@ class R3Trainer(Trainer):
         elif labels.size(1) > seq_len:
             labels = labels[:, :seq_len]
         # Shift: predict token t using logits at t-1.
-        shift_logits = logits[..., :-1, :].contiguous().float()
+        shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         valid = (shift_labels != -100).sum().item()
         if valid == 0:
@@ -445,12 +445,32 @@ class R3Trainer(Trainer):
             sid = sample_ids if sample_ids is not None else []
             logging.warning("Causal CE skipped: all labels are -100 (sample_ids=%s)", sid)
             return logits.new_tensor(0.0)
-        loss = F.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1),
-            ignore_index=-100,
-        )
-        return loss
+        vocab = shift_logits.size(-1)
+        flat_logits = shift_logits.view(-1, vocab)
+        flat_labels = shift_labels.view(-1)
+        # Avoid a huge float32 copy on long sequences by chunking when logits are fp16/bf16.
+        if flat_logits.dtype == torch.float32:
+            return F.cross_entropy(flat_logits, flat_labels, ignore_index=-100)
+        chunk_tokens = 128 if vocab >= 100000 else 256
+        total_loss = torch.zeros((), device=flat_logits.device, dtype=torch.float32)
+        total_count = 0
+        for start in range(0, flat_logits.size(0), chunk_tokens):
+            logits_chunk = flat_logits[start : start + chunk_tokens].float()
+            labels_chunk = flat_labels[start : start + chunk_tokens]
+            if labels_chunk.eq(-100).all():
+                continue
+            total_loss = total_loss + F.cross_entropy(
+                logits_chunk,
+                labels_chunk,
+                ignore_index=-100,
+                reduction="sum",
+            )
+            total_count += int((labels_chunk != -100).sum().item())
+        if total_count == 0:
+            sid = sample_ids if sample_ids is not None else []
+            logging.warning("Causal CE skipped: all labels are -100 (sample_ids=%s)", sid)
+            return logits.new_tensor(0.0)
+        return (total_loss / float(total_count)).to(dtype=logits.dtype)
 
     @staticmethod
     def _tokenize_branch(
@@ -767,6 +787,7 @@ def main() -> None:
             base_ds,
             vision_tokens=cfg["model"].get("vision_tokens", 16),
             hidden_size=cfg["model"].get("hidden_size", 4096),
+            dataset_type=ds_type,
             apply_corruption=apply_corr,
             pseudo_builder=PseudoTextBuilder(),
             pseudo_corpus=pseudo_corpus,
