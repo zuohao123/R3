@@ -45,6 +45,17 @@ except Exception:  # pragma: no cover
 
 # Lazy-initialized OCR engine (PaddleOCR preferred)
 _paddle_ocr = None  # type: ignore
+OCR_BACKEND = "auto"
+
+
+def _paddle_models_available() -> bool:
+    base = Path(os.getenv("PADDLEOCR_HOME", "~/.paddleocr")).expanduser()
+    if not base.exists():
+        return False
+    for pattern in ("*.pdmodel", "*.pdiparams"):
+        if any(base.rglob(pattern)):
+            return True
+    return False
 
 
 def run_ocr(image_path: str) -> List[Dict]:
@@ -53,7 +64,15 @@ def run_ocr(image_path: str) -> List[Dict]:
     """
     global _paddle_ocr
 
-    if PaddleOCR is not None:
+    backend = OCR_BACKEND
+    if backend == "auto":
+        offline = os.getenv("DISABLE_MODEL_SOURCE_CHECK", "").lower() in ("1", "true", "yes")
+        if offline and not _paddle_models_available():
+            backend = "tesseract"
+        else:
+            backend = "paddle" if PaddleOCR is not None else "tesseract"
+
+    if backend == "paddle" and PaddleOCR is not None:
         if _paddle_ocr is None:
             try:
                 # use_angle_cls: 旋转检测; lang 可按需改为 'ch', 'en', 'en_ppocrv4' 等
@@ -459,7 +478,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", type=str, default="train")
     parser.add_argument("--output", type=Path, required=True, help="Destination JSONL file.")
     parser.add_argument("--limit", type=int, default=None, help="Optional sample cap per dataset.")
-    parser.add_argument("--enable_ocr", action="store_true", help="Run pytesseract OCR when samples lack tokens.")
+    parser.add_argument("--enable_ocr", action="store_true", help="Run OCR when samples lack tokens.")
+    parser.add_argument(
+        "--ocr_backend",
+        choices=["auto", "paddle", "tesseract"],
+        default="auto",
+        help="OCR backend selection. auto prefers PaddleOCR when available and local models exist.",
+    )
     parser.add_argument(
         "--caption_model",
         type=str,
@@ -704,6 +729,8 @@ def process_single_dataset(
 
 def main() -> None:
     args = parse_args()
+    global OCR_BACKEND
+    OCR_BACKEND = args.ocr_backend
 
     # 示例（中文说明）:
     # 单卡/CPU 生成伪文本 + OCR：
