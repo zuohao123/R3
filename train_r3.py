@@ -832,8 +832,11 @@ def main() -> None:
         enable_consistency=model_section.get("enable_consistency", True),
         lambda_consistency=model_section.get("lambda_consistency", 0.3),
         top_k=model_section.get("top_k", 3),
+        use_pseudo_query=model_section.get("use_pseudo_query", True),
+        pseudo_query_weight=model_section.get("pseudo_query_weight", 0.6),
         retrieval_cache_path=model_section.get("retrieval_cache_path"),
         retrieval_corpus_path=model_section.get("retrieval_corpus_path"),
+        retrieval_max_evidence_tokens=model_section.get("retrieval_max_evidence_tokens", 128),
         consistency_start_step=model_section.get("consistency_start_step", 0),
         consistency_ramp_steps=model_section.get("consistency_ramp_steps", 0),
     )

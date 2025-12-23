@@ -25,6 +25,8 @@ class RetrievalModuleConfig:
     cache_path: Optional[str] = None  # enable FAISS/vector store when set
     max_evidence_tokens: int = 32     # max tokens per evidence string when tokenizer is available
     external_chunk_size: int = 4096   # CPU top-k chunk size for large external corpus
+    use_pseudo_query: bool = True
+    pseudo_query_weight: float = 0.6
 
 
 @dataclass
@@ -148,13 +150,25 @@ class PseudoTextRetrievalModule(nn.Module):
             question_embeddings.to(device=device).float(),
             txt_conf.to(device=device).float(),
         )  # (b, d)
+        pseudo_query = None
+        evidence_embeddings = None
+        evidence_texts: Optional[List[List[str]]] = None
+        if self.config.use_pseudo_query:
+            pseudo_embeddings, pseudo_texts = self._encode_evidence(pseudo_text, device)
+            pseudo_query = self._build_pseudo_query(pseudo_embeddings)
+            evidence_embeddings = pseudo_embeddings
+            evidence_texts = pseudo_texts
         if self.external_embeddings is not None and self.external_texts is not None:
             # Use external corpus built from build_pseudo_text.py outputs
             evidence_embeddings = self.external_embeddings
             evidence_texts = [self.external_texts for _ in range(question_embeddings.size(0))]
-        else:
+        elif evidence_embeddings is None or evidence_texts is None:
             evidence_embeddings, evidence_texts = self._encode_evidence(pseudo_text, device)
-            evidence_embeddings = evidence_embeddings.float()
+        evidence_embeddings = evidence_embeddings.float()
+        if pseudo_query is not None:
+            weight = float(self.config.pseudo_query_weight)
+            weight = max(0.0, min(1.0, weight))
+            query = (1.0 - weight) * query + weight * pseudo_query
 
         if (
             self.external_embeddings is not None
@@ -188,6 +202,10 @@ class PseudoTextRetrievalModule(nn.Module):
             "embeddings": topk_embeddings,
             "scores": topk_scores,
         }
+
+    def _build_pseudo_query(self, pseudo_embeddings: torch.Tensor) -> torch.Tensor:
+        pooled = pseudo_embeddings.squeeze(2).mean(dim=1)
+        return self.query_proj(pooled)
 
     def _cpu_topk_external(
         self,

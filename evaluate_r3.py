@@ -734,8 +734,11 @@ def main() -> None:
             enable_imputation=model_section.get("enable_imputation", True),
             enable_consistency=False if args.disable_consistency else model_section.get("enable_consistency", False),
             top_k=model_section.get("top_k", 3),
+            use_pseudo_query=model_section.get("use_pseudo_query", True),
+            pseudo_query_weight=model_section.get("pseudo_query_weight", 0.6),
             retrieval_cache_path=model_section.get("retrieval_cache_path"),
             retrieval_corpus_path=model_section.get("retrieval_corpus_path"),
+            retrieval_max_evidence_tokens=model_section.get("retrieval_max_evidence_tokens", 128),
         )
         model = R3Model(model_cfg)
         # If the backbone is sharded via `device_map`, a global `.to(device)` will try to

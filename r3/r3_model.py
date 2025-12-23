@@ -36,6 +36,8 @@ class R3ModelConfig:
     revision: Optional[str] = None
     local_files_only: bool = False
     top_k: int = 3
+    use_pseudo_query: bool = True
+    pseudo_query_weight: float = 0.6
     enable_corruption: bool = True
     enable_retrieval: bool = True
     enable_prefix: bool = True
@@ -47,6 +49,7 @@ class R3ModelConfig:
     consistency_ramp_steps: int = 0
     retrieval_cache_path: Optional[str] = None
     retrieval_corpus_path: Optional[str] = None
+    retrieval_max_evidence_tokens: int = 128
 
     # Lightweight compatibility with HF callbacks that expect PretrainedConfig APIs.
     def to_dict(self) -> Dict:
@@ -97,6 +100,9 @@ class R3Model(torch.nn.Module):
                 top_k=config.top_k,
                 enable=config.enable_retrieval,
                 cache_path=config.retrieval_cache_path,
+                max_evidence_tokens=config.retrieval_max_evidence_tokens,
+                use_pseudo_query=config.use_pseudo_query,
+                pseudo_query_weight=config.pseudo_query_weight,
             ),
             embedding_layer=self.base_vlm.model.get_input_embeddings(),
             tokenizer=self.base_vlm.tokenizer,
