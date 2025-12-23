@@ -11,9 +11,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional
 
-os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import torch
 from PIL import Image
@@ -55,23 +55,31 @@ def run_ocr(image_path: str) -> List[Dict]:
 
     if PaddleOCR is not None:
         if _paddle_ocr is None:
-            # use_angle_cls: 旋转检测; lang 可按需改为 'ch', 'en', 'en_ppocrv4' 等
-            _paddle_ocr = PaddleOCR(use_angle_cls=True, lang="en")
-        result = _paddle_ocr.ocr(image_path, cls=True)
-        tokens: List[Dict] = []
-        for line in result or []:
-            for box, txt, score in line:
-                xs, ys = zip(*box)
-                bbox = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
-                tokens.append(
-                    {
-                        "text": txt,
-                        "bbox": bbox,
-                        "conf": float(score),
-                        "src": "ocr_paddle",
-                    }
-                )
-        return tokens
+            try:
+                # use_angle_cls: 旋转检测; lang 可按需改为 'ch', 'en', 'en_ppocrv4' 等
+                _paddle_ocr = PaddleOCR(use_angle_cls=True, lang="en")
+            except Exception as e:  # pragma: no cover
+                print(f"Warning: PaddleOCR init failed: {e}. Falling back to pytesseract.")
+                _paddle_ocr = None
+        if _paddle_ocr is not None:
+            try:
+                result = _paddle_ocr.ocr(image_path, cls=True)
+                tokens: List[Dict] = []
+                for line in result or []:
+                    for box, txt, score in line:
+                        xs, ys = zip(*box)
+                        bbox = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
+                        tokens.append(
+                            {
+                                "text": txt,
+                                "bbox": bbox,
+                                "conf": float(score),
+                                "src": "ocr_paddle",
+                            }
+                        )
+                return tokens
+            except Exception as e:  # pragma: no cover
+                print(f"Warning: PaddleOCR failed for {image_path}: {e}. Falling back to pytesseract.")
 
     # Fallback to pytesseract
     if pytesseract is None:
