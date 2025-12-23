@@ -55,8 +55,9 @@ class UncertaintyAwareCorruptionSimulator(nn.Module):
         """
         # Always compute confidences in float32 for stability. Keeping module weights in fp32
         # avoids AMP/GradScaler issues (unscale expects non-fp16 grads).
-        vision_f = vision_feats.float()
-        text_f = text_feats.float()
+        target_dtype = self.img_conf_head[0].weight.dtype
+        vision_f = vision_feats.to(dtype=target_dtype)
+        text_f = text_feats.to(dtype=target_dtype)
         img_conf = torch.sigmoid(self.img_conf_head(vision_f)).squeeze(-1)
         txt_conf = torch.sigmoid(self.txt_conf_head(text_f)).squeeze(-1)
 

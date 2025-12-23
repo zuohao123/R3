@@ -38,6 +38,7 @@ class PrefixEncoder(nn.Module):
                 self.config.hidden_size,
             )
         pooled = evidence_embeddings.mean(dim=2)
+        pooled = pooled.to(dtype=self.gru.weight_ih_l0.dtype, device=self.gru.weight_ih_l0.device)
         # 保底对齐 hidden size，防止检索返回的维度异常（如 top-k 空或量化/哈希导致维度非 hidden_size）。
         if pooled.size(-1) != self.config.hidden_size:
             if pooled.size(-1) > self.config.hidden_size:
@@ -62,8 +63,13 @@ class EvidenceMemory(nn.Module):
     def forward(self, hidden: torch.Tensor, memory: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
         if memory.numel() == 0:
             return hidden
+        base_dtype = hidden.dtype
+        target_dtype = self.cross_attn.in_proj_weight.dtype
+        hidden = hidden.to(dtype=target_dtype)
+        memory = memory.to(dtype=target_dtype)
         attn_out, _ = self.cross_attn(hidden, memory, memory)
-        return hidden + gate.view(-1, 1, 1) * attn_out
+        out = hidden + gate.view(-1, 1, 1) * attn_out
+        return out.to(dtype=base_dtype)
 
 
 class LatentImputationTokens(nn.Module):
@@ -81,6 +87,7 @@ class LatentImputationTokens(nn.Module):
         low_conf_mask = (1.0 - text_conf).unsqueeze(-1)
         weighted = (text_embeddings * low_conf_mask).sum(dim=1)
         fused = torch.cat([weighted, evidence_summary], dim=-1)
+        fused = fused.to(dtype=self.token_proj.weight.dtype)
         tokens = self.token_proj(fused).unsqueeze(1)
         tokens = tokens.repeat(1, self.config.imputation_tokens, 1)
         return tokens
@@ -105,6 +112,7 @@ class AdaptiveGatingController(nn.Module):
             ],
             dim=1,
         )
+        summary = summary.to(dtype=self.proj[0].weight.dtype)
         gates = torch.sigmoid(self.proj(summary))
         return gates  # [batch, 2]
 
@@ -275,6 +283,7 @@ class TriPathReasoner(nn.Module):
         key_padding = None
         if attention_mask is not None:
             key_padding = attention_mask == 0
-        refined = self.encoder(inputs_embeds.float(), src_key_padding_mask=key_padding)
+        target_dtype = self.layer_norm.weight.dtype
+        refined = self.encoder(inputs_embeds.to(dtype=target_dtype), src_key_padding_mask=key_padding)
         refined = self.layer_norm(refined)
         return refined.to(dtype=base_dtype)

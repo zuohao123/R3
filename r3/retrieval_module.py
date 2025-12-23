@@ -155,7 +155,7 @@ class PseudoTextRetrievalModule(nn.Module):
         evidence_texts: Optional[List[List[str]]] = None
         if self.config.use_pseudo_query:
             pseudo_embeddings, pseudo_texts = self._encode_evidence(pseudo_text, device)
-            pseudo_query = self._build_pseudo_query(pseudo_embeddings)
+            pseudo_query = self._build_pseudo_query(pseudo_embeddings).to(dtype=query.dtype)
             evidence_embeddings = pseudo_embeddings
             evidence_texts = pseudo_texts
         if self.external_embeddings is not None and self.external_texts is not None:
@@ -205,6 +205,8 @@ class PseudoTextRetrievalModule(nn.Module):
 
     def _build_pseudo_query(self, pseudo_embeddings: torch.Tensor) -> torch.Tensor:
         pooled = pseudo_embeddings.squeeze(2).mean(dim=1)
+        target_dtype = self.query_proj.weight.dtype
+        pooled = pooled.to(dtype=target_dtype, device=self.query_proj.weight.device)
         return self.query_proj(pooled)
 
     def _cpu_topk_external(
@@ -250,6 +252,7 @@ class PseudoTextRetrievalModule(nn.Module):
     def _build_query(self, question_embeddings: torch.Tensor, txt_conf: torch.Tensor) -> torch.Tensor:
         weights = (1.0 - txt_conf).unsqueeze(-1)
         pooled = (question_embeddings * weights).sum(dim=1) / (weights.sum(dim=1) + 1e-6)
+        pooled = pooled.to(dtype=self.query_proj.weight.dtype, device=self.query_proj.weight.device)
         return self.query_proj(pooled)
 
     def _encode_evidence(
@@ -350,6 +353,7 @@ class PseudoTextRetrievalModule(nn.Module):
         img_conf: torch.Tensor,
         txt_conf: torch.Tensor,
     ) -> torch.Tensor:
+        evidence = evidence.to(dtype=self.evidence_proj.weight.dtype, device=self.evidence_proj.weight.device)
         proj = self.evidence_proj(evidence).squeeze(2)  # (b, evidences, d)
         query = query.unsqueeze(1)
         logits = torch.cosine_similarity(query, proj, dim=-1)
