@@ -33,10 +33,7 @@ try:
 except ImportError:  # pragma: no cover
     pytesseract = None
 
-try:
-    from paddleocr import PaddleOCR  # type: ignore
-except Exception:  # pragma: no cover
-    PaddleOCR = None
+PaddleOCR = None
 
 try:
     import requests  # type: ignore
@@ -46,6 +43,18 @@ except Exception:  # pragma: no cover
 # Lazy-initialized OCR engine (PaddleOCR preferred)
 _paddle_ocr = None  # type: ignore
 OCR_BACKEND = "auto"
+
+
+def _lazy_import_paddleocr():
+    global PaddleOCR
+    if PaddleOCR is not None:
+        return PaddleOCR, None
+    try:
+        from paddleocr import PaddleOCR as _PaddleOCR  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        return None, exc
+    PaddleOCR = _PaddleOCR
+    return PaddleOCR, None
 
 
 def _paddle_models_available() -> bool:
@@ -72,11 +81,17 @@ def run_ocr(image_path: str) -> List[Dict]:
         else:
             backend = "paddle" if PaddleOCR is not None else "tesseract"
 
-    if backend == "paddle" and PaddleOCR is not None:
+    if backend == "paddle":
+        paddle_cls, paddle_err = _lazy_import_paddleocr()
+        if paddle_cls is None:
+            print(f"Warning: PaddleOCR import failed: {paddle_err}. Falling back to pytesseract.")
+            backend = "tesseract"
+
+    if backend == "paddle":
         if _paddle_ocr is None:
             try:
                 # use_angle_cls: 旋转检测; lang 可按需改为 'ch', 'en', 'en_ppocrv4' 等
-                _paddle_ocr = PaddleOCR(use_angle_cls=True, lang="en")
+                _paddle_ocr = paddle_cls(use_angle_cls=True, lang="en")
             except Exception as e:  # pragma: no cover
                 print(f"Warning: PaddleOCR init failed: {e}. Falling back to pytesseract.")
                 _paddle_ocr = None
