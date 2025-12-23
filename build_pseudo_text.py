@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -13,6 +14,10 @@ from typing import Dict, List, Optional
 import torch
 from PIL import Image
 from transformers import AutoConfig, AutoModelForVision2Seq, AutoProcessor
+
+os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 try:
     from huggingface_hub import snapshot_download  # type: ignore
