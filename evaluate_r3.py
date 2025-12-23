@@ -552,6 +552,7 @@ def tokenize_with_template(
     labels = text_tokens["input_ids"].clone()
     labels[text_tokens["attention_mask"] == 0] = -100
     prompt_lengths = prompt_tokens["attention_mask"].sum(dim=1)
+    text_tokens["prompt_length"] = prompt_lengths.to(device)
     for idx, length in enumerate(prompt_lengths):
         labels[idx, : length.item()] = -100
     if (labels != -100).sum(dim=1).eq(0).any():
@@ -583,6 +584,7 @@ def tokenize_with_template(
         labels = text_tokens["input_ids"].clone()
         labels[text_tokens["attention_mask"] == 0] = -100
         prompt_lengths = prompt_tokens["attention_mask"].sum(dim=1)
+        text_tokens["prompt_length"] = prompt_lengths.to(device)
         for idx, length in enumerate(prompt_lengths):
             labels[idx, : length.item()] = -100
     text_tokens["labels"] = labels
@@ -1118,6 +1120,7 @@ def main() -> None:
                 vision_tokens=int(vision_tokens),
                 seq_len=logits.size(1),
             )
+            valid_counts = (aligned_labels != -100).sum(dim=1).tolist()
             raw_predictions = decode_predictions(logits, aligned_labels, tokenizer)
             predictions = [first_sentence(clean_generation_output(p)) for p in raw_predictions]
             retrieval_texts = None
@@ -1165,8 +1168,15 @@ def main() -> None:
                         img_path = None
                         if isinstance(corrupted_split.get("image_path"), list) and j < len(corrupted_split["image_path"]):
                             img_path = corrupted_split["image_path"][j]
+                        prompt_len = None
+                        if "prompt_length" in corrupted_tokens and j < corrupted_tokens["prompt_length"].size(0):
+                            prompt_len = int(corrupted_tokens["prompt_length"][j].item())
+                        labels_valid = valid_counts[j] if j < len(valid_counts) else None
                         print(
                             f"  id={batch['ids'][j]} | img={img_path} | pred_raw={predictions[j]} | pred_scored={scored_preds[j]} | target={targets[j]}"
+                        )
+                        print(
+                            f"  prompt_len={prompt_len} labels_valid={labels_valid} max_seq_len={max_len}"
                         )
                         pseudo_entries = []
                         if isinstance(corrupted_split.get("pseudo_text"), list) and j < len(corrupted_split["pseudo_text"]):
